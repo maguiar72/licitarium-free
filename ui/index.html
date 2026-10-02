@@ -20,8 +20,33 @@
   <div class="card wcard">
     <svg viewBox="0 0 64 64" aria-hidden="true" id="svg-estandarte-wiz"></svg>
     <div class="mark">LICITARI<b>V</b>M</div>
-    <div class="sub">Repositório municipal de contratações públicas</div>
-    <div class="campos">
+    <div class="sub">Repositório de contratações públicas</div>
+    <!-- edição JF: o acervo pode ser de um município (original) ou de um
+         conjunto de órgãos identificados por CNPJ -->
+    <div class="campos" id="wiz-modos" role="radiogroup" aria-label="Tipo de acervo"
+         style="display:flex; gap:14px; margin-bottom:10px">
+      <label style="display:flex; gap:6px; align-items:center">
+        <input type="radio" name="wiz-modo" value="orgaos" checked> Órgãos (por CNPJ)</label>
+      <label style="display:flex; gap:6px; align-items:center">
+        <input type="radio" name="wiz-modo" value="municipio"> Município</label>
+    </div>
+    <div class="campos" id="wiz-campos-orgaos">
+      <label for="wiz-predef">Grupo de órgãos</label>
+      <select id="wiz-predef"></select>
+      <div id="wiz-predef-lista" class="wnota" style="margin:6px 0 0; text-align:left"></div>
+      <div id="wiz-cnpjs-caixa" class="oculto">
+        <label for="wiz-nome-acervo">Nome do acervo</label>
+        <input type="text" id="wiz-nome-acervo" placeholder="ex.: Conselho da Justiça Federal"
+               autocomplete="off">
+        <label for="wiz-cnpjs">CNPJs dos órgãos (um por linha)</label>
+        <textarea id="wiz-cnpjs" rows="4" style="width:100%"
+                  placeholder="00.508.903/0001-88"></textarea>
+      </div>
+      <label for="wiz-desde">Coletar a partir de</label>
+      <select id="wiz-desde"></select>
+      <div id="wiz-orgaos-erro" class="wnota" role="alert" style="margin:6px 0 0"></div>
+    </div>
+    <div class="campos oculto" id="wiz-campos-municipio">
       <label for="wiz-uf">Estado</label>
       <select id="wiz-uf"><option value="">Todos</option></select>
       <label for="wiz-busca">Município</label>
@@ -29,10 +54,10 @@
              autocomplete="off">
       <div id="wiz-sugestoes" class="oculto" role="listbox"></div>
     </div>
-    <div class="wnota">O histórico completo desde 2021 será baixado do PNCP na
+    <div class="wnota" id="wiz-nota">O histórico completo desde 2021 será baixado do PNCP na
       primeira sincronização — pode levar alguns minutos. Nada é enviado a
       terceiros: o Licitarium apenas lê dados públicos.</div>
-    <button class="btn" id="wiz-ok" style="width:100%" disabled>Começar</button>
+    <button class="btn" id="wiz-ok" style="width:100%">Começar</button>
     <button class="btn ghost" id="wiz-restaurar" style="width:100%;margin-top:8px">
       Já tenho uma cópia salva — Restaurar…</button>
     <div id="wiz-restaurar-msg" class="wnota" style="margin:8px 0 0"></div>
@@ -542,9 +567,9 @@
         </div>
       </div>
       <div class="secao-cfg oculto" data-secao="municipio">
-        <h4>Município</h4>
+        <h4 id="cfg-municipio-titulo">Município</h4>
         <div style="font-size:13.5px" id="cfg-municipio"></div>
-        <div class="aviso">Para trocar de município, use o assistente inicial:
+        <div class="aviso">Para trocar de município ou de grupo de órgãos, use o assistente inicial:
           a troca reinicia o acervo e refaz o download histórico.
           <button class="btn ghost" id="btn-trocar" style="margin-left:8px">Trocar…</button>
         </div>

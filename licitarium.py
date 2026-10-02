@@ -29,6 +29,22 @@ import pncp
 import relatorios
 
 VERSAO = "2.15.0"
+# Edição JF: fork (maguiar72/licitarium-free) que acrescenta o acervo por
+# ÓRGÃOS (CNPJ) ao acervo por município do original. `VERSAO` segue a do
+# projeto de origem em que o fork se baseia; `EDICAO_JF` conta as revisões
+# do fork sobre ela. A tag de release é `v<VERSAO>-jf.<EDICAO_JF>`.
+EDICAO_JF = 1
+REPO_ATUALIZACAO = "maguiar72/licitarium-free"
+
+
+def _versao_tupla(texto):
+    """"2.15.0-jf.3" → (2, 15, 0, 3); "2.15.0" → (2, 15, 0, 0). Devolve
+    None se o texto não for uma versão reconhecível — quem compara trata
+    None como "não sei", nunca como versão menor."""
+    m = re.fullmatch(r"v?(\d+(?:\.\d+)*)(?:-jf\.(\d+))?", (texto or "").strip())
+    if not m:
+        return None
+    return tuple(int(x) for x in m.group(1).split(".")) + (int(m.group(2) or 0),)
 # dentro do exe onefile os arquivos ficam na pasta temporária do bundle;
 # _MEIPASS é o caminho oficial para chegar até eles
 DIR_APP = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
@@ -834,6 +850,9 @@ class Api:
                     "municipio": cfg.get("municipio_nome"),
                     "uf": cfg.get("municipio_uf"),
                     "ibge": cfg.get("municipio_ibge"),
+                    # "municipio" (original) ou "orgaos" (acervo por CNPJ)
+                    "modo": cfg.get("modo_acervo") or "municipio",
+                    "edicao": f"JF.{EDICAO_JF}",
                     "tema": cfg.get("tema", "portal"),
                     # achado do usuário (2026-09-11): Compacta (50% da
                     # janela) em monitor largo deixa uma faixa morta de
@@ -1076,9 +1095,106 @@ class Api:
             pncp._config(db, "municipio_ibge", str(codigo))
             pncp._config(db, "municipio_nome", nome)
             pncp._config(db, "municipio_uf", uf)
+            # sai do acervo por órgãos, se era esse o modo anterior
+            db.execute("DELETE FROM config WHERE chave IN"
+                       " ('modo_acervo', 'unidades_excluidas', 'inicio_coleta')")
+            db.commit()
         finally:
             db.close()
         return True
+
+    # ── acervo por órgãos (edição JF) ───────────────────────────────────
+
+    def predefinicoes(self):
+        """Grupos de órgãos prontos para o assistente inicial."""
+        return [{"chave": chave, "nome": p["nome"], "descricao": p["descricao"],
+                 "orgaos": [{"cnpj": c, "nome": n} for c, n in p["orgaos"]]}
+                for chave, p in pncp.PREDEFINICOES.items()]
+
+    @staticmethod
+    def _limpar_acervo(db):
+        """Zera o acervo e as marcas d'água — o banco é cache
+        reconstruível. Mesma lista de `trocar_municipio`."""
+        for tabela in ("contratacoes", "contratos", "atas", "orgaos",
+                       "itens", "pca_itens", "sync_log"):
+            db.execute(f"DELETE FROM {tabela}")
+        db.execute("DELETE FROM config WHERE chave LIKE 'last_sync_%'")
+        db.commit()
+
+    def _validar_cnpjs(self, texto):
+        """Lê CNPJs de um texto livre (um por linha, com ou sem
+        pontuação) e confirma cada um no PNCP. Devolve
+        `(lista de (cnpj, razão social), erro)`."""
+        cnpjs = []
+        for pedaco in re.split(r"[\s,;]+", texto or ""):
+            digitos = "".join(c for c in pedaco if c.isdigit())
+            if not digitos:
+                continue
+            if len(digitos) != 14:
+                return None, f"CNPJ deve ter 14 dígitos: {pedaco}"
+            if digitos not in cnpjs:
+                cnpjs.append(digitos)
+        if not cnpjs:
+            return None, "informe ao menos um CNPJ"
+        orgaos = []
+        for cnpj in cnpjs:
+            try:
+                registro = pncp.consultar_orgao(cnpj)
+            except pncp.PncpErro as e:
+                return None, f"não consegui confirmar {cnpj} no PNCP ({e})"
+            if not registro:
+                return None, f"CNPJ {cnpj} não encontrado no PNCP"
+            orgaos.append((cnpj, registro.get("razaoSocial") or cnpj))
+        return orgaos, None
+
+    def configurar_orgaos(self, predefinicao=None, nome=None, cnpjs=None,
+                          desde=None):
+        """Define o acervo por CNPJs de órgão, em vez de por município.
+
+        Com `predefinicao` (chave de `pncp.PREDEFINICOES`) usa a lista
+        pronta, sem consultar o portal. Sem ela, `cnpjs` (texto livre) é
+        validado CNPJ a CNPJ no PNCP e `nome` dá título ao acervo. `desde`
+        (ano) limita a primeira coleta. Se já havia acervo, reinicia — como
+        `trocar_municipio`."""
+        excluidas = ()
+        if predefinicao:
+            p = pncp.PREDEFINICOES.get(predefinicao)
+            if not p:
+                return {"ok": False, "erro": "predefinição desconhecida"}
+            nome, uf = p["nome"], p["uf"]
+            orgaos, excluidas = list(p["orgaos"]), p["unidades_excluidas"]
+        else:
+            nome = (nome or "").strip()
+            if not nome:
+                return {"ok": False, "erro": "dê um nome ao acervo"}
+            orgaos, erro = self._validar_cnpjs(cnpjs)
+            if erro:
+                return {"ok": False, "erro": erro}
+            uf = "BR"
+        try:
+            ano = int(desde) if desde else None
+        except (TypeError, ValueError):
+            return {"ok": False, "erro": "ano inicial inválido"}
+        if ano is not None and not 2021 <= ano <= datetime.now().year:
+            return {"ok": False, "erro": "ano inicial inválido"}
+        if not self._sync_ativo.acquire(blocking=False):
+            return {"ok": False, "erro": MSG_SYNC_ATIVO}
+        try:
+            db = abrir_db()
+            try:
+                if pncp._config(db, "municipio_ibge"):
+                    self._limpar_acervo(db)
+                pncp.configurar_acervo_orgaos(db, nome, uf, orgaos, excluidas)
+                if ano:
+                    pncp._config(db, "inicio_coleta", f"{ano}-01-01")
+                else:
+                    db.execute("DELETE FROM config WHERE chave='inicio_coleta'")
+                    db.commit()
+            finally:
+                db.close()
+            return {"ok": True}
+        finally:
+            self._sync_ativo.release()
 
     def trocar_municipio(self, codigo, nome, uf):
         """Troca = reinicia o acervo (banco é cache reconstruível)."""
@@ -1197,13 +1313,17 @@ class Api:
             if not registro:
                 return {"ok": False, "erro": "CNPJ não encontrado no PNCP"}
             razao = registro.get("razaoSocial") or ""
-            if registro.get("esferaId") != "M":
-                return {"ok": False,
-                        "erro": f"{razao or cnpj} não é órgão municipal"}
-            if municipio and _sem_acento(municipio) not in _sem_acento(razao):
-                return {"ok": False,
-                        "erro": f"{razao} não parece ser de {municipio} — "
-                                "confira o CNPJ"}
+            # as duas travas abaixo protegem o acervo MUNICIPAL de um CNPJ
+            # de outra prefeitura. No acervo por órgãos o CNPJ é a própria
+            # definição do recorte: basta existir no PNCP, em qualquer esfera.
+            if not pncp.modo_orgaos(db):
+                if registro.get("esferaId") != "M":
+                    return {"ok": False,
+                            "erro": f"{razao or cnpj} não é órgão municipal"}
+                if municipio and _sem_acento(municipio) not in _sem_acento(razao):
+                    return {"ok": False,
+                            "erro": f"{razao} não parece ser de {municipio} — "
+                                    "confira o CNPJ"}
             db.execute(
                 "INSERT OR IGNORE INTO orgaos (cnpj, razao_social, ativo, origem)"
                 " VALUES (?,?,1,'manual')", (cnpj, razao or nome or cnpj))
@@ -2461,15 +2581,15 @@ class Api:
         """
         try:
             req = urllib.request.Request(
-                "https://api.github.com/repos/devtulio/licitarium-free/releases/latest",
+                f"https://api.github.com/repos/{REPO_ATUALIZACAO}/releases/latest",
                 headers={"User-Agent": pncp.USER_AGENT,
                          "Accept": "application/vnd.github+json"})
             with urllib.request.urlopen(req, timeout=10) as r:
                 d = json.load(r)
             tag = (d.get("tag_name") or "").lstrip("v")
-            local = [int(x) for x in VERSAO.split(".")]
-            remota = [int(x) for x in tag.split(".")] if tag else []
-            if remota > local:
+            local = _versao_tupla(f"{VERSAO}-jf.{EDICAO_JF}")
+            remota = _versao_tupla(tag)
+            if remota and remota > local:
                 self._atualizacao = d.get("html_url")
                 self._nova_versao = tag
                 # o nome do exe carrega a versão, então casa por padrão e

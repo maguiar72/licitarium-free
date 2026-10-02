@@ -6,6 +6,16 @@
 
 ---
 
+## Edição JF (este fork)
+
+Este fork acrescenta ao Licitarium o **acervo por órgãos (CNPJ)**, para uso
+fora da esfera municipal — com uma predefinição pronta para a **Justiça
+Federal** (CJF, TRFs da 1ª à 6ª Região e seções judiciárias). No assistente
+inicial, escolha *Órgãos (por CNPJ)* e o grupo *Justiça Federal*, ou informe
+outros CNPJs. O modo *Município* continua igual ao original. Detalhes no
+[CHANGELOG](CHANGELOG.md). Projeto de origem:
+[devtulio/licitarium-free](https://github.com/devtulio/licitarium-free) (MIT).
+
 ## Descrição
 
 O **Licitarium** espelha, no computador do órgão, tudo o que o município publica

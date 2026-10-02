@@ -1,5 +1,30 @@
 # Changelog
 
+## 2.15.0-jf.1 — 2026-10-02 (edição JF, fork maguiar72/licitarium-free)
+
+**Adicionado — acervo por órgãos (CNPJ), além do acervo por município**
+
+O original define o acervo por `codigoMunicipioIbge` e só aceita órgão de
+esfera municipal. Órgão federal não cabe nesse recorte. Esta edição acrescenta
+um segundo modo, escolhido no assistente inicial:
+
+- **Órgãos (por CNPJ)** — a fase 1 consulta `/v1/contratacoes/atualizacao` com
+  o parâmetro `cnpj`, uma passada por órgão ativo, em janelas de 31 dias
+  (`config.janela_orgaos_dias`) e com marca d'água por CNPJ. Contratos, atas,
+  PCA e itens seguem como já eram (por CNPJ).
+- **Predefinição "Justiça Federal"** — nove CNPJs (guarda-chuva da Justiça
+  Federal, TRFs da 1ª à 6ª Região, JFRJ e JFSP), com exclusão das três
+  unidades alheias cadastradas no CNPJ guarda-chuva.
+- **Outros órgãos** — lista livre de CNPJs, conferidos um a um no PNCP.
+- **Coletar a partir de** — ano inicial da primeira coleta.
+- O cadastro manual de órgão deixa de exigir esfera municipal neste modo.
+- A checagem de atualização passa a olhar as releases do fork
+  (`vX.Y.Z-jf.N`).
+
+O modo **Município** continua como no original. Não alterado nesta edição:
+relatórios (cabeçalhos ainda falam em município) e "municípios de referência"
+da pesquisa de preços.
+
 ## 2.15.0 — 2026-09-21
 
 **Adicionado — progresso dentro de cada contratação na coleta de itens

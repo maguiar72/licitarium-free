@@ -231,14 +231,64 @@ $("cfg-maximizar").addEventListener("change", () =>
 
 // ── wizard ────────────────────────────────────────────────────────────────
 let wizEscolha = null;
-function iniciarWizard() {
+// edição JF: o acervo pode ser de um município (fluxo original) ou de um
+// conjunto de órgãos por CNPJ — predefinido (Justiça Federal) ou digitado
+let wizPredefs = [];
+const NOTA_WIZ = {
+  municipio: "O histórico completo desde 2021 será baixado do PNCP na "
+    + "primeira sincronização — pode levar alguns minutos. Nada é enviado a "
+    + "terceiros: o Licitarium apenas lê dados públicos.",
+  orgaos: "As contratações, contratos, atas e planos desses órgãos serão "
+    + "baixados do PNCP na primeira sincronização. Para um grupo grande, "
+    + "como a Justiça Federal inteira, a primeira coleta leva horas — pode "
+    + "ser interrompida e retomada. Nada é enviado a terceiros: o "
+    + "Licitarium apenas lê dados públicos.",
+};
+function wizModo() {
+  return document.querySelector('input[name="wiz-modo"]:checked')?.value
+    || "municipio";
+}
+function wizAtualizarModo() {
+  const orgaos = wizModo() === "orgaos";
+  $("wiz-campos-orgaos").classList.toggle("oculto", !orgaos);
+  $("wiz-campos-municipio").classList.toggle("oculto", orgaos);
+  $("wiz-nota").textContent = NOTA_WIZ[orgaos ? "orgaos" : "municipio"];
+  $("wiz-ok").disabled = !orgaos && !wizEscolha;
+  if (orgaos) wizAtualizarPredef();
+}
+function wizAtualizarPredef() {
+  const chave = $("wiz-predef").value;
+  const p = wizPredefs.find(x => x.chave === chave);
+  $("wiz-cnpjs-caixa").classList.toggle("oculto", !!p);
+  $("wiz-predef-lista").innerHTML = p
+    ? `${esc(p.descricao)} — ${p.orgaos.length} CNPJs:<br>` + p.orgaos.map(o =>
+        `<span class="dim">${esc(o.cnpj)}</span> ${esc(o.nome)}`).join("<br>")
+    : "";
+  $("wiz-orgaos-erro").textContent = "";
+}
+async function iniciarWizard() {
   esconderSplash();
   $("wizard").classList.remove("oculto");
   $("app").classList.add("oculto");
   const sel = $("wiz-uf");
   if (sel.options.length === 1)
     UFS.forEach(uf => sel.add(new Option(uf, uf)));
+  const predef = $("wiz-predef");
+  if (!predef.options.length) {
+    // ponte antiga (ou mock de teste) sem o método: só "outros órgãos"
+    wizPredefs = api.predefinicoes ? await api.predefinicoes() : [];
+    wizPredefs.forEach(p => predef.add(new Option(p.nome, p.chave)));
+    predef.add(new Option("Outros órgãos — informar CNPJs", ""));
+    const desde = $("wiz-desde");
+    for (let ano = 2021; ano <= new Date().getFullYear(); ano++)
+      desde.add(new Option(ano === 2021 ? "2021 (todo o histórico do PNCP)"
+                                        : String(ano), ano));
+  }
+  wizAtualizarModo();
 }
+document.querySelectorAll('input[name="wiz-modo"]').forEach(r =>
+  r.addEventListener("change", wizAtualizarModo));
+$("wiz-predef").addEventListener("change", wizAtualizarPredef);
 $("wiz-busca").addEventListener("input", async () => {
   wizEscolha = null; $("wiz-ok").disabled = true;
   const texto = $("wiz-busca").value.trim();
@@ -259,6 +309,28 @@ $("wiz-busca").addEventListener("input", async () => {
     }));
 });
 $("wiz-ok").addEventListener("click", async () => {
+  if (wizModo() === "orgaos") {
+    // com acervo já existente o backend reinicia o banco, como na troca de
+    // município — a confirmação fica aqui, antes de chamar a ponte
+    if (estado.municipio && !confirm("Trocar o acervo reinicia o banco e "
+        + "refaz o download histórico. Continuar?")) return;
+    const rotulo = $("wiz-ok").textContent;
+    $("wiz-ok").disabled = true;
+    $("wiz-ok").textContent = "Conferindo no PNCP…";
+    $("wiz-orgaos-erro").textContent = "";
+    const chave = $("wiz-predef").value;
+    const r = await api.configurar_orgaos(
+      chave || null, $("wiz-nome-acervo").value, $("wiz-cnpjs").value,
+      +$("wiz-desde").value || null);
+    if (!r?.ok) {
+      $("wiz-ok").disabled = false;
+      $("wiz-ok").textContent = rotulo;
+      $("wiz-orgaos-erro").textContent = r?.erro || "Não consegui configurar os órgãos.";
+      return;
+    }
+    iniciarApp(await api.get_estado());
+    return;
+  }
   if (!wizEscolha) return;
   $("wiz-ok").disabled = true;
   $("wiz-ok").textContent = "Preparando…";
@@ -298,11 +370,19 @@ async function iniciarApp(e) {
   estado.municipio = e.municipio;
   $("wizard").classList.add("oculto");
   $("app").classList.remove("oculto");
-  $("sub-edicao").textContent = `Versão gratuita (${e.versao})`;
-  $("sub-municipio").textContent =
-    `Contratações públicas de ${e.municipio} · ${e.uf}`;
-  api.set_titulo(`Licitarium Free ${e.versao} — ${e.municipio}/${e.uf}`);
-  progressoSplash(0.6, `${e.municipio} · ${e.uf}`);
+  // edição JF: no acervo por órgãos não há UF nem "de <município>"
+  const porOrgaos = e.modo === "orgaos";
+  const rotuloAcervo = porOrgaos ? e.municipio : `${e.municipio} · ${e.uf}`;
+  $("sub-edicao").textContent = e.edicao
+    ? `Versão gratuita (${e.versao}) · edição ${e.edicao}`
+    : `Versão gratuita (${e.versao})`;
+  $("sub-municipio").textContent = porOrgaos
+    ? `Contratações públicas — ${e.municipio}`
+    : `Contratações públicas de ${e.municipio} · ${e.uf}`;
+  api.set_titulo(porOrgaos
+    ? `Licitarium Free ${e.versao} — ${e.municipio}`
+    : `Licitarium Free ${e.versao} — ${e.municipio}/${e.uf}`);
+  progressoSplash(0.6, rotuloAcervo);
   mostrarUltimaSync(e.sincronizado_em);
   renderKpis(e.kpis);
   await carregarFiltros();
@@ -2036,8 +2116,15 @@ $("btn-compactar-banco")?.addEventListener("click", async () => {
 $("btn-config").addEventListener("click", async () => {
   abrirModal("veu-config");
   const [e, brasao] = await Promise.all([api.get_estado(), api.brasao()]);
-  $("cfg-municipio").innerHTML = `${esc(e.municipio)} — ${esc(e.uf)}
-    <small class="dim">(IBGE ${esc(e.ibge)})</small>`;
+  if (e.modo === "orgaos") {
+    $("cfg-municipio-titulo").textContent = "Acervo por órgãos";
+    $("cfg-municipio").innerHTML = `${esc(e.municipio)}
+      <small class="dim">(órgãos por CNPJ — veja a lista em Sincronização)</small>`;
+  } else {
+    $("cfg-municipio-titulo").textContent = "Município";
+    $("cfg-municipio").innerHTML = `${esc(e.municipio)} — ${esc(e.uf)}
+      <small class="dim">(IBGE ${esc(e.ibge)})</small>`;
+  }
   mostrarBrasao(brasao.dataurl);
   aplicarLimCompras(parseFloat(e.limite_dispensa_compras) || 0);
   aplicarLimObras(parseFloat(e.limite_dispensa_obras) || 0);

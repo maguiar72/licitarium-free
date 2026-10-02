@@ -3,6 +3,9 @@ name: CI
 on:
   push:
   pull_request:
+  # edição JF: permite disparar à mão (escolhendo a tag) quando o Actions
+  # do fork foi habilitado depois de a tag subir
+  workflow_dispatch:
 
 jobs:
   testes:

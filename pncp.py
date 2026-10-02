@@ -12,7 +12,8 @@ registros tipados com `.raw` como fonte da verdade (ver `tipos.py` do
 pacote); quem decide schema e o que já tem gravado é este arquivo.
 
 Estratégia (DESIGN.md §3): sync em 3 fases —
-  1) contratações por codigoMunicipioIbge (loop obrigatório por modalidade);
+  1) contratações por codigoMunicipioIbge (loop obrigatório por modalidade)
+     — ou, no acervo por órgãos (edição JF), por CNPJ de cada órgão ativo;
   2) contratos, atas e PCA por CNPJ dos órgãos descobertos na fase 1;
   3) itens e resultados das contratações (banco de preços).
 Endpoints /atualizacao permitem sync incremental por data de atualização.
@@ -26,12 +27,16 @@ from datetime import date, datetime, timedelta
 
 from motor_pncp import (
     DATA_INICIO_PNCP,
+    MODALIDADES,
     Config,
+    Contratacao,
     ItensIndisponiveis,
     Motor,
     PncpErro,
     SyncCancelado,  # noqa: F401 — reexportado, usado como pncp.SyncCancelado
+    amd,
     ipca,
+    janelas,
 )
 
 USER_AGENT = "Licitarium/0.1 (repositorio local de contratacoes; open-source)"
@@ -46,6 +51,92 @@ USER_AGENT = "Licitarium/0.1 (repositorio local de contratacoes; open-source)"
 # em 4,8 min, mais rápido que as outras duas que nem terminaram. Sem
 # paralelismo, o backoff sempre ganha. Ver [[reference_pncp_429_waf]].
 CONFIG_MOTOR = Config(conexoes_paralelas=1)
+
+
+# ── acervo por ÓRGÃOS (edição JF) ───────────────────────────────────────────
+# O Licitarium original define o acervo por município (`codigoMunicipioIbge`).
+# Órgão federal não cabe nesse recorte: a Justiça Federal publica sob poucos
+# CNPJs, com unidades espalhadas pelo país. Neste modo (`modo_acervo=orgaos`
+# em `config`) a fase 1 consulta `/v1/contratacoes/atualizacao` com o
+# parâmetro `cnpj` — que a API aceita, conferido em 2026-10-02 — para cada
+# órgão ativo da tabela `orgaos`. Todo o resto (contratos, atas, PCA, itens,
+# relatórios) já era por CNPJ ou por `referencia=0` e segue igual.
+#
+# `IBGE_ORGAOS` ocupa o lugar do código IBGE em `config.municipio_ibge` e na
+# coluna `municipio_ibge` do acervo próprio: as consultas que recortam "o meu
+# acervo" por essa coluna continuam valendo sem mudar de forma, e nenhum
+# município real tem esse código.
+IBGE_ORGAOS = "ORGAOS"
+
+# Janela de datas da fase 1 por CNPJ. Com `codigoMunicipioIbge` o portal
+# responde janelas de 364 dias; com `cnpj` de órgão grande, janelas de um
+# trimestre ou mais estouraram o tempo de resposta nas consultas de teste
+# (2026-10-02), e as de um mês responderam. Um mês é o padrão; dá para
+# trocar em `config` (`janela_orgaos_dias`) sem recompilar.
+JANELA_ORGAO_DIAS = 31
+
+# Predefinições oferecidas no assistente inicial. Os nove CNPJs da Justiça
+# Federal foram conferidos em `/api/pncp/v1/orgaos/{cnpj}` (2026-10-02): todos
+# existem, esfera F, poder J.
+#   · 00508903000188 é o guarda-chuva: tem como unidades administrativas o
+#     CJF (090001, 090026), os TRFs e as seções judiciárias dos estados;
+#   · TRFs da 1ª à 6ª Região, JFRJ e JFSP também têm CNPJ próprio. Entram
+#     todos: uma unidade pode publicar sob o guarda-chuva ou sob o CNPJ
+#     próprio, e o custo de um CNPJ sem movimento é uma resposta vazia por
+#     consulta. O registro é gravado por `numeroControlePNCP`, então nada
+#     duplica.
+# `unidades_excluidas`: unidades alheias cadastradas no CNPJ guarda-chuva
+# (Corregedoria-Geral da Justiça/ES, TJ de Alagoas, PM do DF — conferidas em
+# `/v1/orgaos/00508903000188/unidades`). Sem o filtro, registros delas
+# entrariam no acervo da JF.
+PREDEFINICOES = {
+    "jf": {
+        "nome": "Justiça Federal",
+        "uf": "BR",
+        "descricao": "CJF, TRFs da 1ª à 6ª Região e seções judiciárias",
+        "orgaos": [
+            ("00508903000188", "Justiça Federal de Primeira Instância "
+                               "(CJF, TRF1, TRF5 e seções judiciárias)"),
+            ("32243347000151", "Tribunal Regional Federal da 2ª Região"),
+            ("59949362000176", "Tribunal Regional Federal da 3ª Região"),
+            ("92518737000119", "Tribunal Regional Federal da 4ª Região"),
+            ("47784477000179", "Tribunal Regional Federal da 6ª Região"),
+            ("05424540000116", "Justiça Federal de Primeiro Grau no Rio de Janeiro"),
+            ("03658507000125", "Tribunal Regional Federal da 1ª Região"),
+            ("24130072000111", "Tribunal Regional Federal da 5ª Região"),
+            ("05445105000178", "Justiça Federal de Primeiro Grau em São Paulo"),
+        ],
+        "unidades_excluidas": ["040101", "925343", "925368"],
+    },
+}
+
+
+def _codigo_unidade(valor):
+    """Código de unidade sem zeros à esquerda: o PNCP devolve a mesma
+    unidade como "090026" e como "90026" conforme o endpoint."""
+    return str(valor or "").strip().lstrip("0")
+
+
+def unidades_excluidas(db):
+    """Conjunto de códigos de unidade (normalizados) que o acervo por órgãos
+    descarta. Vazio no modo município."""
+    bruto = _config(db, "unidades_excluidas") or ""
+    return {c for c in (_codigo_unidade(x) for x in bruto.split(",")) if c}
+
+
+def _unidade_de(item):
+    """Código da unidade administrativa de um registro do PNCP, nas grafias
+    que os endpoints usam (contratação/contrato trazem `unidadeOrgao`; ata e
+    PCA trazem o código solto)."""
+    unidade = item.get("unidadeOrgao") or {}
+    return _codigo_unidade(
+        unidade.get("codigoUnidade")
+        or _primeiro(item, "codigoUnidadeOrgao", "codigoUnidade"))
+
+
+def modo_orgaos(db):
+    """True se o acervo é definido por CNPJs de órgão, não por município."""
+    return _config(db, "modo_acervo") == "orgaos"
 
 
 def _primeiro(item, *chaves):
@@ -346,6 +437,90 @@ def sync_contratacoes(db, codigo_ibge, inicio, fim, motor=None, referencia=0,
         progresso, "Contratações")
 
 
+def _filtrando_unidade(db, upsert):
+    """Gravador de `_baixar_lote` que descarta registro de unidade excluída.
+
+    Lê a lista uma vez por fase (não por registro). No modo município a
+    lista é vazia e o gravador é o upsert de sempre."""
+    excluidas = unidades_excluidas(db)
+    if not excluidas:
+        return lambda registro: upsert(db, registro.raw)
+
+    def gravar(registro):
+        if _unidade_de(registro.raw) in excluidas:
+            return False
+        return upsert(db, registro.raw)
+    return gravar
+
+
+def inicio_coleta(db):
+    """Data a partir da qual a primeira coleta busca: `config.inicio_coleta`
+    (AAAA-MM-DD, escolhida no assistente) ou o início do PNCP. Só vale
+    enquanto não há marca d'água — depois a coleta é incremental."""
+    try:
+        escolhida = date.fromisoformat(_config(db, "inicio_coleta") or "")
+    except ValueError:
+        return DATA_INICIO_PNCP
+    return max(escolhida, DATA_INICIO_PNCP)
+
+
+def janela_orgaos_dias(db):
+    """Tamanho da janela da fase 1 por CNPJ: `config.janela_orgaos_dias` se
+    for um inteiro entre 1 e 364, senão `JANELA_ORGAO_DIAS`."""
+    try:
+        dias = int(_config(db, "janela_orgaos_dias") or 0)
+    except ValueError:
+        dias = 0
+    return dias if 1 <= dias <= 364 else JANELA_ORGAO_DIAS
+
+
+def sync_contratacoes_orgao(db, cnpj, inicio, fim, motor=None, progresso=None):
+    """Fase 1 do acervo por órgãos: contratações de UM CNPJ, por modalidade
+    e janela de datas.
+
+    `Motor.contratacoes` monta a consulta com `codigoMunicipioIbge` e não
+    tem variante por CNPJ (motor_pncp 1.4.0), então a lista de consultas é
+    montada aqui e entregue ao mesmo `_baixar_com_disjuntor` que ele usa —
+    retry, disjuntor, repescagem e `Motor.refazer` valem do mesmo jeito. É
+    método interno do motor: a versão está travada em `requirements.txt`, e
+    `tests/test_orgaos_modo.py` quebra se a assinatura mudar.
+
+    Grava com `municipio_ibge=IBGE_ORGAOS` e `referencia=0` (acervo próprio)
+    e descarta as unidades de `config.unidades_excluidas`.
+    """
+    motor = motor or Motor(user_agent=USER_AGENT, config=CONFIG_MOTOR)
+    dias = janela_orgaos_dias(db)
+    consultas = [(nome, {"dataInicial": amd(a), "dataFinal": amd(b),
+                         "codigoModalidadeContratacao": codigo,
+                         "cnpj": cnpj})
+                 for codigo, nome in MODALIDADES.items()
+                 for a, b in janelas(inicio, fim, dias)]
+    registros = motor._baixar_com_disjuntor(
+        "/v1/contratacoes/atualizacao", consultas,
+        rotulo_fase="Contratações", tipo=Contratacao, tamanho_pagina=50)
+    gravar = _filtrando_unidade(
+        db, lambda banco, raw: _upsert_contratacao(banco, raw, IBGE_ORGAOS, 0))
+    return _baixar_lote(db, motor, registros, gravar, progresso, "Contratações")
+
+
+def configurar_acervo_orgaos(db, nome, uf, orgaos, excluidas=()):
+    """Grava em `config` e `orgaos` um acervo definido por CNPJs.
+
+    `orgaos` é uma lista de `(cnpj, razão social)`. Entram como
+    `origem='manual'` e ativos; quem chama já validou os CNPJs."""
+    _config(db, "modo_acervo", "orgaos")
+    _config(db, "municipio_ibge", IBGE_ORGAOS)
+    _config(db, "municipio_nome", nome)
+    _config(db, "municipio_uf", uf)
+    _config(db, "unidades_excluidas",
+            ",".join(sorted({_codigo_unidade(c) for c in excluidas} - {""})))
+    for cnpj, razao in orgaos:
+        db.execute(
+            "INSERT OR IGNORE INTO orgaos (cnpj, razao_social, ativo, origem)"
+            " VALUES (?,?,1,'manual')", (cnpj, razao or cnpj))
+    db.commit()
+
+
 def consultar_orgao(cnpj, motor=None):
     """Registro do CNPJ no PNCP (razão social, esfera) — None se o CNPJ não
     existe no portal. Usado para conferir um órgão antes de adicioná-lo à
@@ -374,7 +549,7 @@ def sync_contratos(db, cnpj, inicio, fim, motor=None, progresso=None):
     """Fase 2: contratos de um órgão (API não filtra por município)."""
     motor = motor or Motor(user_agent=USER_AGENT, config=CONFIG_MOTOR)
     return _baixar_lote(db, motor, motor.contratos(cnpj, inicio, fim),
-                        lambda c: _upsert_contrato(db, c.raw),
+                        _filtrando_unidade(db, _upsert_contrato),
                         progresso, "Contratos")
 
 
@@ -382,7 +557,7 @@ def sync_atas(db, cnpj, inicio, fim, motor=None, progresso=None):
     """Fase 2: atas de registro de preços de um órgão."""
     motor = motor or Motor(user_agent=USER_AGENT, config=CONFIG_MOTOR)
     return _baixar_lote(db, motor, motor.atas(cnpj, inicio, fim),
-                        lambda a: _upsert_ata(db, a.raw), progresso, "Atas")
+                        _filtrando_unidade(db, _upsert_ata), progresso, "Atas")
 
 
 def _upsert_pca(db, plano):
@@ -420,7 +595,7 @@ def sync_pca(db, cnpj, inicio, fim, motor=None, progresso=None):
     """
     motor = motor or Motor(user_agent=USER_AGENT, config=CONFIG_MOTOR)
     return _baixar_lote(db, motor, motor.pca(cnpj, inicio, fim),
-                        lambda p: _upsert_pca(db, p.raw), progresso, "PCA")
+                        _filtrando_unidade(db, _upsert_pca), progresso, "PCA")
 
 
 # separador dos fornecedores concatenados em atas.fornecedor_ni/fornecedor_nome
@@ -720,7 +895,7 @@ def sincronizar_tudo(db, codigo_ibge, progresso=None, forcado=True,
     def janela_de(tipo):
         ultimo = _config(db, f"last_sync_{tipo}")
         if not ultimo:
-            return DATA_INICIO_PNCP
+            return inicio_coleta(db)
         # 1 dia de sobreposição: garante pegar registros atualizados no
         # exato dia da última sincronização (upsert torna a repetição inócua)
         return date.fromisoformat(ultimo) - timedelta(days=1)
@@ -742,7 +917,36 @@ def sincronizar_tudo(db, codigo_ibge, progresso=None, forcado=True,
     alvos_itens = set()
 
     # fase 1 — contratações do município próprio
-    if ibge_proprio_no_escopo:
+    if ibge_proprio_no_escopo and modo_orgaos(db):
+        # acervo por órgãos: uma passada por CNPJ ativo, com marca d'água
+        # POR CNPJ (mesmo motivo da fase 2: um órgão que falha não pode
+        # segurar a data de corte dos outros). Falha em um não impede os
+        # demais; o resumo só fecha como "ok" se todos fecharam.
+        cnpjs = [r[0] for r in db.execute(
+            "SELECT cnpj FROM orgaos WHERE ativo=1 ORDER BY cnpj").fetchall()]
+        total, falhou, inicios = 0, False, []
+        for i, cnpj in enumerate(cnpjs, 1):
+            chave = f"contratacoes_{cnpj}"
+            inicio = janela_de(chave)
+            inicios.append(inicio)
+            if progresso:
+                progresso(f"Contratações — órgão {i} de {len(cnpjs)} ({cnpj})…")
+            try:
+                total += sync_contratacoes_orgao(
+                    db, cnpj, inicio, hoje, motor=motor, progresso=progresso)
+                _config(db, f"last_sync_{chave}", hoje.isoformat())
+            except PncpErro as e:
+                falhou = True
+                _log(db, "contratacoes", inicio, hoje, total, "erro",
+                     f"{cnpj}: {e}")
+        if not falhou:
+            _config(db, "last_sync_contratacoes", hoje.isoformat())
+            _log(db, "contratacoes", min(inicios) if inicios else hoje, hoje,
+                 total, "ok")
+            resumo["contratacoes"] = total
+        else:
+            resumo["contratacoes"] = None
+    elif ibge_proprio_no_escopo:
         inicio = janela_de("contratacoes")
         try:
             n = sync_contratacoes(db, codigo_ibge, inicio, hoje, motor=motor,
@@ -753,6 +957,7 @@ def sincronizar_tudo(db, codigo_ibge, progresso=None, forcado=True,
         except PncpErro as e:
             _log(db, "contratacoes", inicio, hoje, 0, "erro", str(e))
             resumo["contratacoes"] = None
+    if ibge_proprio_no_escopo:
         descobrir_orgaos(db)
         alvos_itens.add(codigo_ibge)
 

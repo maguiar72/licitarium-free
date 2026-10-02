@@ -758,6 +758,20 @@ function scriptPonte(temaBanco = "portal") {
                                  codigo });
         return { ok: true };
       },
+      // edição JF — acervo por órgãos (CNPJ)
+      predefinicoes: async () => [{ chave: "jf", nome: "Justiça Federal",
+        descricao: "CJF, TRFs da 1ª à 6ª Região e seções judiciárias",
+        orgaos: [
+          { cnpj: "00508903000188", nome: "Justiça Federal de Primeira Instância" },
+          { cnpj: "59949362000176", nome: "Tribunal Regional Federal da 3ª Região" },
+        ] }],
+      configurar_orgaos: async (predefinicao, nome, cnpjs, desde) => {
+        window.__chamadas.push({ metodo: "configurar_orgaos", predefinicao,
+                                 nome, cnpjs, desde });
+        if (!predefinicao && (cnpjs || "").replace(/[^0-9]/g, "").length < 14)
+          return { ok: false, erro: "informe ao menos um CNPJ" };
+        return { ok: true };
+      },
     }};
   `;
 }
