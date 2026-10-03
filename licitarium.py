@@ -33,7 +33,7 @@ VERSAO = "2.15.0"
 # ÓRGÃOS (CNPJ) ao acervo por município do original. `VERSAO` segue a do
 # projeto de origem em que o fork se baseia; `EDICAO_JF` conta as revisões
 # do fork sobre ela. A tag de release é `v<VERSAO>-jf.<EDICAO_JF>`.
-EDICAO_JF = 1
+EDICAO_JF = 2
 REPO_ATUALIZACAO = "maguiar72/licitarium-free"
 
 

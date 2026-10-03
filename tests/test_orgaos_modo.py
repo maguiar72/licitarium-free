@@ -368,3 +368,46 @@ def test_ordem_das_versoes_do_fork():
 
 def test_atualizacao_aponta_para_o_fork():
     assert licitarium.REPO_ATUALIZACAO == "maguiar72/licitarium-free"
+
+
+# ── linha de status: de qual órgão é a volta (jf.2) ──────────────────────
+
+@pytest.mark.parametrize("msg,orgao,esperado", [
+    ("Contratações — Leilão eletrônico (8/117)…", "TRF3 (órgão 8 de 9)",
+     "Contratações — TRF3 (órgão 8 de 9) — Leilão eletrônico (8/117)…"),
+    ("Contratações…", "TRF3 (órgão 8 de 9)",
+     "Contratações — TRF3 (órgão 8 de 9)…"),
+    ("Itens — contratação 3 de 50", "", "Itens — contratação 3 de 50"),
+])
+def test_mensagem_de_progresso_ganha_o_orgao_em_curso(msg, orgao, esperado):
+    assert pncp._com_orgao(msg, orgao) == esperado
+
+
+def test_rotulo_do_orgao_usa_sigla_razao_social_ou_cnpj(db):
+    _acervo_jf(db)
+    assert pncp.rotulo_orgao(db, TRF3, 8, 9) == "TRF3 (órgão 8 de 9)"
+    db.execute("INSERT INTO orgaos (cnpj, razao_social, ativo, origem) VALUES"
+               " ('11111111000111', 'Conselho Nacional de Alguma Coisa Muito"
+               " Comprida', 1, 'manual')")
+    rotulo = pncp.rotulo_orgao(db, "11111111000111", 1, 2)
+    assert rotulo.startswith("Conselho Nacional de Alguma") and "…" in rotulo
+    assert rotulo.endswith("(órgão 1 de 2)")
+    assert pncp.rotulo_orgao(db, "22222222000122", 2, 2) == \
+        "22222222000122 (órgão 2 de 2)"
+
+
+def test_sincronizar_avisa_o_orgao_de_cada_volta_e_limpa_depois(db):
+    _acervo_jf(db)
+    mensagens = []
+    pncp.sincronizar_tudo(db, pncp.IBGE_ORGAOS, motor=MotorPorCnpj(),
+                          progresso=mensagens.append)
+    assert "Contratações — JF 1ª Inst./CJF (órgão 1 de 2)…" in mensagens
+    assert "Contratações — TRF3 (órgão 2 de 2)…" in mensagens
+    # o que vem depois das voltas por órgão não carrega órgão nenhum
+    assert not any("órgão" in m for m in mensagens
+                   if m.startswith(("Itens", "Compactando")))
+
+
+def test_todas_as_siglas_sao_de_cnpjs_da_predefinicao():
+    cnpjs = {c for c, _ in pncp.PREDEFINICOES["jf"]["orgaos"]}
+    assert set(pncp.SIGLAS_ORGAOS) == cnpjs

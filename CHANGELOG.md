@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.15.0-jf.2 — 2026-10-03 (edição JF)
+
+**Corrigido — a linha de status da coleta agora diz de qual órgão é a volta**
+
+As fases que dão uma volta por CNPJ (contratações no acervo por órgãos;
+contratos, atas e PCA) mostravam só a modalidade e o contador da volta atual
+("Leilão eletrônico (8/117)"). Com nove órgãos, o contador recomeçando a cada
+um parecia laço. A mensagem passa a trazer o órgão e a posição dele:
+"Contratações — TRF3 (órgão 8 de 9) — Leilão eletrônico (8/117)…".
+
 ## 2.15.0-jf.1 — 2026-10-02 (edição JF, fork maguiar72/licitarium-free)
 
 **Adicionado — acervo por órgãos (CNPJ), além do acervo por município**

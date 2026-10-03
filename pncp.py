@@ -111,6 +111,47 @@ PREDEFINICOES = {
 }
 
 
+# Nome curto de cada CNPJ da predefinição, para a linha de status da coleta:
+# a razão social inteira não cabe ao lado da modalidade e do contador.
+SIGLAS_ORGAOS = {
+    "00508903000188": "JF 1ª Inst./CJF",
+    "03658507000125": "TRF1",
+    "32243347000151": "TRF2",
+    "59949362000176": "TRF3",
+    "92518737000119": "TRF4",
+    "24130072000111": "TRF5",
+    "47784477000179": "TRF6",
+    "05424540000116": "JFRJ",
+    "05445105000178": "JFSP",
+}
+
+
+def rotulo_orgao(db, cnpj, posicao, total):
+    """"TRF3 (órgão 8 de 9)" — sigla conhecida, senão a razão social
+    cadastrada (cortada em 30 caracteres), senão o próprio CNPJ."""
+    nome = SIGLAS_ORGAOS.get(cnpj)
+    if not nome:
+        linha = db.execute("SELECT razao_social FROM orgaos WHERE cnpj=?",
+                           (cnpj,)).fetchone()
+        nome = (linha[0] if linha and linha[0] else cnpj)
+        if len(nome) > 30:
+            nome = nome[:29].rstrip() + "…"
+    return f"{nome} (órgão {posicao} de {total})"
+
+
+def _com_orgao(msg, orgao):
+    """Encaixa o órgão em curso na mensagem de progresso, logo depois do
+    nome da fase: "Contratações — Leilão eletrônico (8/117)…" vira
+    "Contratações — TRF3 (órgão 8 de 9) — Leilão eletrônico (8/117)…".
+    Sem órgão em curso a mensagem passa intacta."""
+    if not orgao:
+        return msg
+    fase, separador, resto = msg.partition(" — ")
+    if not separador:
+        return f"{msg.rstrip('…')} — {orgao}…"
+    return f"{fase} — {orgao} — {resto}"
+
+
 def _codigo_unidade(valor):
     """Código de unidade sem zeros à esquerda: o PNCP devolve a mesma
     unidade como "090026" e como "90026" conforme o endpoint."""
@@ -888,6 +929,17 @@ def sincronizar_tudo(db, codigo_ibge, progresso=None, forcado=True,
                 return {"pulado": True,
                         "faltam": int(INTERVALO_MINIMO - idade)}
     _config(db, "ultimo_sync_em", datetime.now().isoformat())
+    # As fases 1 (acervo por órgãos) e 2 dão uma volta por CNPJ, e a mensagem
+    # do motor só traz modalidade e contador da volta atual — na tela, o
+    # contador recomeçando a cada órgão parecia laço (achado do usuário,
+    # 2026-10-03). `em_curso` guarda o órgão da vez e o embrulho o encaixa
+    # em toda mensagem, venha do motor ou daqui.
+    em_curso = {"orgao": ""}
+    if progresso:
+        progresso_bruto = progresso
+
+        def progresso(msg):
+            progresso_bruto(_com_orgao(msg, em_curso["orgao"]))
     motor = motor or Motor(user_agent=USER_AGENT, config=CONFIG_MOTOR, progresso=progresso)
     hoje = date.today()
     resumo = {}
@@ -929,8 +981,9 @@ def sincronizar_tudo(db, codigo_ibge, progresso=None, forcado=True,
             chave = f"contratacoes_{cnpj}"
             inicio = janela_de(chave)
             inicios.append(inicio)
+            em_curso["orgao"] = rotulo_orgao(db, cnpj, i, len(cnpjs))
             if progresso:
-                progresso(f"Contratações — órgão {i} de {len(cnpjs)} ({cnpj})…")
+                progresso("Contratações…")
             try:
                 total += sync_contratacoes_orgao(
                     db, cnpj, inicio, hoje, motor=motor, progresso=progresso)
@@ -939,6 +992,7 @@ def sincronizar_tudo(db, codigo_ibge, progresso=None, forcado=True,
                 falhou = True
                 _log(db, "contratacoes", inicio, hoje, total, "erro",
                      f"{cnpj}: {e}")
+        em_curso["orgao"] = ""
         if not falhou:
             _config(db, "last_sync_contratacoes", hoje.isoformat())
             _log(db, "contratacoes", min(inicios) if inicios else hoje, hoje,
@@ -965,11 +1019,12 @@ def sincronizar_tudo(db, codigo_ibge, progresso=None, forcado=True,
         # acervo próprio — descobrir_orgaos já filtra WHERE referencia=0;
         # municípios de referência não têm uso pra isso, só preço)
         orgaos = [r[0] for r in db.execute(
-            "SELECT cnpj FROM orgaos WHERE ativo=1").fetchall()]
+            "SELECT cnpj FROM orgaos WHERE ativo=1 ORDER BY cnpj").fetchall()]
         for tipo, func in (("contratos", sync_contratos), ("atas", sync_atas),
                            ("pca", sync_pca)):
             total, falhou, inicios = 0, False, []
-            for cnpj in orgaos:
+            for i, cnpj in enumerate(orgaos, 1):
+                em_curso["orgao"] = rotulo_orgao(db, cnpj, i, len(orgaos))
                 # janela POR CNPJ: uma chave só por tipo fazia um órgão birrento
                 # travar a data de corte de todos os outros para sempre — cada
                 # sync recomeçava a janela inteira de todo mundo até aquele CNPJ
@@ -984,6 +1039,7 @@ def sincronizar_tudo(db, codigo_ibge, progresso=None, forcado=True,
                 except PncpErro as e:
                     falhou = True
                     _log(db, tipo, inicio, hoje, total, "erro", f"{cnpj}: {e}")
+            em_curso["orgao"] = ""
             if not falhou:
                 _log(db, tipo, min(inicios) if inicios else hoje, hoje, total, "ok")
                 resumo[tipo] = total
