@@ -33,7 +33,7 @@ VERSAO = "2.15.0"
 # ÓRGÃOS (CNPJ) ao acervo por município do original. `VERSAO` segue a do
 # projeto de origem em que o fork se baseia; `EDICAO_JF` conta as revisões
 # do fork sobre ela. A tag de release é `v<VERSAO>-jf.<EDICAO_JF>`.
-EDICAO_JF = 2
+EDICAO_JF = 3
 REPO_ATUALIZACAO = "maguiar72/licitarium-free"
 
 
@@ -61,9 +61,18 @@ CREATE TABLE IF NOT EXISTS config (chave TEXT PRIMARY KEY, valor TEXT);
 CREATE TABLE IF NOT EXISTS orgaos (
   cnpj TEXT PRIMARY KEY, razao_social TEXT, ativo INTEGER DEFAULT 1,
   origem TEXT DEFAULT 'descoberto');
+-- Unidades administrativas de cada órgão (edição JF). Um CNPJ federal
+-- reúne dezenas delas (o da Justiça Federal: CJF, TRFs, seções); é por
+-- unidade que o usuário filtra o acervo e liga/desliga a coleta. `codigo`
+-- vem sem zeros à esquerda (o PNCP escreve a mesma unidade de dois jeitos);
+-- `codigo_pncp` guarda a grafia do portal, usada na consulta.
+CREATE TABLE IF NOT EXISTS unidades (
+  cnpj TEXT, codigo TEXT, codigo_pncp TEXT, nome TEXT, municipio TEXT,
+  uf TEXT, ativo INTEGER DEFAULT 1, origem TEXT DEFAULT 'descoberta',
+  PRIMARY KEY (cnpj, codigo));
 CREATE TABLE IF NOT EXISTS contratacoes (
   numero_controle TEXT PRIMARY KEY, ano INTEGER, sequencial INTEGER,
-  orgao_cnpj TEXT, orgao_nome TEXT, unidade TEXT,
+  orgao_cnpj TEXT, orgao_nome TEXT, unidade TEXT, unidade_codigo TEXT,
   modalidade_id INTEGER, modalidade_nome TEXT, situacao TEXT, objeto TEXT,
   valor_estimado REAL, valor_homologado REAL,
   data_encerramento_proposta TEXT,
@@ -78,14 +87,15 @@ CREATE TABLE IF NOT EXISTS contratos (
   numero_contrato TEXT, ano_contrato INTEGER, sequencial_contrato INTEGER,
   fornecedor_ni TEXT, fornecedor_nome TEXT, objeto TEXT, valor_global REAL,
   vigencia_inicio TEXT, vigencia_fim TEXT, data_assinatura TEXT,
-  data_publicacao TEXT, data_atualizacao TEXT, raw TEXT, sync_em TEXT);
+  data_publicacao TEXT, data_atualizacao TEXT, raw TEXT, sync_em TEXT,
+  unidade_codigo TEXT);
 CREATE TABLE IF NOT EXISTS atas (
   numero_controle TEXT PRIMARY KEY, contratacao_controle TEXT, orgao_cnpj TEXT,
   numero_ata TEXT, ano_ata INTEGER, objeto TEXT,
   vigencia_inicio TEXT, vigencia_fim TEXT, data_assinatura TEXT,
   data_publicacao TEXT, data_atualizacao TEXT,
   fornecedor_ni TEXT, fornecedor_nome TEXT,
-  raw TEXT, sync_em TEXT);
+  raw TEXT, sync_em TEXT, unidade_codigo TEXT);
 CREATE TABLE IF NOT EXISTS itens (
   id TEXT PRIMARY KEY, contratacao_controle TEXT, orgao_cnpj TEXT,
   ano INTEGER, sequencial INTEGER, numero_item INTEGER,
@@ -102,7 +112,7 @@ CREATE TABLE IF NOT EXISTS pca_itens (
   id TEXT PRIMARY KEY, id_pca TEXT, ano INTEGER, orgao_cnpj TEXT, unidade TEXT,
   numero_item INTEGER, descricao TEXT, categoria TEXT, grupo TEXT,
   quantidade REAL, valor_total REAL, data_atualizacao TEXT,
-  raw TEXT, sync_em TEXT);
+  raw TEXT, sync_em TEXT, unidade_codigo TEXT);
 CREATE TABLE IF NOT EXISTS pca_minuta (
   ano_alvo INTEGER PRIMARY KEY, parametros TEXT, gerado_em TEXT);
 CREATE TABLE IF NOT EXISTS pca_minuta_itens (
@@ -590,6 +600,25 @@ def abrir_db():
                    " data_assinatura=json_extract(raw,'$.dataAssinatura'),"
                    " data_publicacao=json_extract(raw,'$.dataPublicacaoPncp')")
         db.commit()
+    # edição JF (jf.3): código da unidade administrativa como coluna, para
+    # filtrar o acervo por unidade. Banco antigo é reprojetado do raw; o PCA
+    # não (o raw dele é o item, e o código mora no plano) — preenche na
+    # próxima coleta.
+    migrou_unidade = False
+    for tabela, caminho in (("contratacoes", "$.unidadeOrgao.codigoUnidade"),
+                            ("contratos", "$.unidadeOrgao.codigoUnidade"),
+                            ("atas", "$.codigoUnidadeOrgao"),
+                            ("pca_itens", None)):
+        colunas_u = {r[1] for r in db.execute(f"PRAGMA table_info({tabela})")}
+        if colunas_u and "unidade_codigo" not in colunas_u:
+            db.execute(f"ALTER TABLE {tabela} ADD COLUMN unidade_codigo TEXT")
+            if caminho:
+                db.execute(
+                    f"UPDATE {tabela} SET unidade_codigo="
+                    f"NULLIF(ltrim(json_extract(raw,'{caminho}'),'0'),'')"
+                    " WHERE raw IS NOT NULL")
+            db.commit()
+            migrou_unidade = True
     # o filtro por unidade agrupa sinônimos, e o agrupamento é o mesmo em
     # Python e em SQL — daí a função viajar para dentro do banco
     db.create_function("unidade_canonica", 1, _unidade_canonica,
@@ -607,6 +636,25 @@ def abrir_db():
     sem_fts = not db.execute("SELECT 1 FROM sqlite_master WHERE"
                              " name='itens_fts'").fetchone()
     db.executescript(SCHEMA)
+    if migrou_unidade:
+        # catálogo inicial a partir do que já está no acervo (o cadastro do
+        # PNCP completa nomes e municípios na próxima sincronização)
+        db.execute(
+            """INSERT OR IGNORE INTO unidades
+                 (cnpj, codigo, codigo_pncp, nome, municipio, uf, ativo, origem)
+               SELECT orgao_cnpj, unidade_codigo,
+                      MAX(json_extract(raw,'$.unidadeOrgao.codigoUnidade')),
+                      MAX(unidade),
+                      MAX(json_extract(raw,'$.unidadeOrgao.municipioNome')),
+                      MAX(json_extract(raw,'$.unidadeOrgao.ufSigla')),
+                      1, 'descoberta'
+               FROM contratacoes
+               WHERE referencia=0 AND unidade_codigo IS NOT NULL
+                 AND orgao_cnpj IS NOT NULL
+                 AND EXISTS (SELECT 1 FROM config WHERE chave='modo_acervo'
+                             AND valor='orgaos')
+               GROUP BY orgao_cnpj, unidade_codigo""")
+        db.commit()
     if sem_fts and db.execute("SELECT COUNT(*) FROM itens").fetchone()[0]:
         db.execute("INSERT INTO itens_fts(itens_fts) VALUES('rebuild')")
         db.commit()
@@ -1116,9 +1164,11 @@ class Api:
         """Zera o acervo e as marcas d'água — o banco é cache
         reconstruível. Mesma lista de `trocar_municipio`."""
         for tabela in ("contratacoes", "contratos", "atas", "orgaos",
-                       "itens", "pca_itens", "sync_log"):
+                       "itens", "pca_itens", "sync_log", "unidades"):
             db.execute(f"DELETE FROM {tabela}")
-        db.execute("DELETE FROM config WHERE chave LIKE 'last_sync_%'")
+        db.execute("DELETE FROM config WHERE chave LIKE 'last_sync_%'"
+                   " OR chave LIKE 'unidades_catalogo_%'"
+                   " OR chave='coleta_por_unidade'")
         db.commit()
 
     def _validar_cnpjs(self, texto):
@@ -1208,9 +1258,11 @@ class Api:
                 # nunca mais revisitadas, lixo permanente a cada troca
                 # (achado 2026-08-24)
                 for tabela in ("contratacoes", "contratos", "atas", "orgaos",
-                               "itens", "pca_itens", "sync_log"):
+                               "itens", "pca_itens", "sync_log", "unidades"):
                     db.execute(f"DELETE FROM {tabela}")
-                db.execute("DELETE FROM config WHERE chave LIKE 'last_sync_%'")
+                db.execute("DELETE FROM config WHERE chave LIKE 'last_sync_%'"
+                           " OR chave LIKE 'unidades_catalogo_%'"
+                           " OR chave='coleta_por_unidade'")
                 db.commit()
             finally:
                 db.close()
@@ -1409,6 +1461,13 @@ class Api:
         if f.get("orgao"):
             where.append("orgao_cnpj=?")
             args.append(f["orgao"])
+        # unidade administrativa (edição JF): "cnpj|código". Não confundir
+        # com `unidade` logo abaixo, que é a unidade de MEDIDA do item.
+        if f.get("unidade_adm") and tipo in ("contratacoes", "contratos",
+                                             "atas", "pca"):
+            cnpj_u, _, codigo_u = str(f["unidade_adm"]).partition("|")
+            where.append("orgao_cnpj=? AND unidade_codigo=?")
+            args += [cnpj_u, codigo_u]
         # ano+órgão são CONTEXTO (o que o usuário está olhando); o resto é
         # RECORTE — snapshot aqui pra "N de M" da lista (fase 7 do handoff,
         # tela 1c) comparar contra a mesma base, sem outra ida ao banco:
@@ -1773,6 +1832,86 @@ class Api:
         webbrowser.open(arquivo.as_uri())
         return {"ok": True, "arquivo": str(arquivo)}
 
+    @staticmethod
+    def _unidades_adm(db, so_com_registro=True):
+        """Unidades administrativas do acervo por órgãos, com a contagem de
+        contratações de cada uma. Vazio no modo município. `so_com_registro`
+        tira as que ainda não têm nada (o filtro da lista não oferece opção
+        que devolve lista vazia; a tela de Sincronização mostra todas)."""
+        if not pncp.modo_orgaos(db):
+            return []
+        excluidas = pncp.unidades_excluidas(db)
+        contagem = {(r[0], r[1]): r[2] for r in db.execute(
+            "SELECT orgao_cnpj, unidade_codigo, COUNT(*) FROM contratacoes"
+            " WHERE referencia=0 AND unidade_codigo IS NOT NULL"
+            " GROUP BY 1, 2")}
+        saida = []
+        for r in db.execute(
+                "SELECT cnpj, codigo, nome, municipio, uf, ativo FROM unidades"
+                " ORDER BY nome, codigo"):
+            n = contagem.get((r["cnpj"], r["codigo"]), 0)
+            if so_com_registro and not n:
+                continue
+            saida.append({"id": f"{r['cnpj']}|{r['codigo']}",
+                          "cnpj": r["cnpj"], "codigo": r["codigo"],
+                          "nome": r["nome"] or r["codigo"],
+                          "municipio": r["municipio"], "uf": r["uf"],
+                          "ativo": bool(r["ativo"]),
+                          "excluida": r["codigo"] in excluidas, "n": n})
+        return saida
+
+    def listar_unidades(self):
+        """Todas as unidades conhecidas, para a tela de Sincronização."""
+        db = abrir_db()
+        try:
+            return {"unidades": self._unidades_adm(db, so_com_registro=False),
+                    "por_unidade": pncp.coleta_por_unidade(db)}
+        finally:
+            db.close()
+
+    def set_unidade_ativa(self, cnpj, codigo, ativo):
+        """Liga/desliga a coleta de uma unidade. O que já está no acervo
+        fica; só deixa de ser atualizado. Ligar uma unidade que a
+        predefinição excluía tira-a também da lista de exclusão."""
+        db = abrir_db()
+        try:
+            db.execute("UPDATE unidades SET ativo=? WHERE cnpj=? AND codigo=?",
+                       (1 if ativo else 0, cnpj, codigo))
+            if ativo:
+                restantes = pncp.unidades_excluidas(db) - {codigo}
+                pncp._config(db, "unidades_excluidas",
+                             ",".join(sorted(restantes)))
+            db.commit()
+            return True
+        finally:
+            db.close()
+
+    def set_unidades_ativas(self, cnpj, ativo):
+        """Liga/desliga de uma vez todas as unidades de um órgão (menos as
+        que a predefinição exclui)."""
+        db = abrir_db()
+        try:
+            excluidas = sorted(pncp.unidades_excluidas(db))
+            marcas = ",".join("?" * len(excluidas))
+            db.execute(
+                "UPDATE unidades SET ativo=? WHERE cnpj=?"
+                + (f" AND codigo NOT IN ({marcas})" if excluidas else ""),
+                [1 if ativo else 0, cnpj] + excluidas)
+            db.commit()
+            return True
+        finally:
+            db.close()
+
+    def set_coleta_por_unidade(self, ligada):
+        """Fase 1 sempre unidade por unidade (mais lenta, progresso por
+        unidade) — ver `pncp.unidades_a_coletar`."""
+        db = abrir_db()
+        try:
+            pncp._config(db, "coleta_por_unidade", "1" if ligada else "0")
+            return True
+        finally:
+            db.close()
+
     def filtros_disponiveis(self):
         db = abrir_db()
         try:
@@ -1823,7 +1962,8 @@ class Api:
                 key=lambda m: m["nome"])
             return {"anos": anos, "situacoes": situacoes,
                     "modalidades": modalidades, "orgaos": orgaos,
-                    "unidades": unidades, "municipios": municipios}
+                    "unidades": unidades, "municipios": municipios,
+                    "unidades_adm": self._unidades_adm(db)}
         finally:
             db.close()
 

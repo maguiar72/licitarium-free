@@ -1,5 +1,38 @@
 # Changelog
 
+## 2.15.0-jf.3 — 2026-10-03 (edição JF)
+
+**Adicionado — unidades administrativas: filtro no acervo e coleta por unidade**
+
+Um CNPJ federal reúne dezenas de unidades. No da Justiça Federal
+(00.508.903/0001-88) saem o CJF, TRFs e as seções judiciárias, e o filtro de
+órgão, que é por CNPJ, não os separava.
+
+- **Filtro "Unidade"** nas abas Contratações, Contratos, Atas e PCA, ao lado
+  do de órgão: lista as unidades com registro (as do órgão escolhido, ou
+  todas) e a quantidade de contratações de cada uma.
+- **Catálogo de unidades** (tabela `unidades`): vem do cadastro do PNCP
+  (`/v1/orgaos/{cnpj}/unidades`), uma vez por CNPJ, e é completado pelas
+  unidades que aparecem nos registros. Cada contratação, contrato, ata e
+  item de PCA passa a gravar o código da unidade (`unidade_codigo`); banco
+  antigo é reprojetado do JSON já guardado, sem baixar de novo (o PCA
+  preenche na próxima coleta).
+- **Liga/desliga por unidade** em Sincronização → "Unidades de cada órgão".
+  Com todas as unidades de um órgão ligadas, ele continua saindo numa volta
+  só de consultas. Com alguma desligada, a fase 1 passa a consultar unidade
+  por unidade (`codigoUnidadeAdministrativa`), só as ligadas, cada uma com a
+  própria marca d'água; contratos, atas e PCA, que o portal só filtra por
+  CNPJ, descartam na gravação o que for de unidade desligada.
+- **Opção "Coletar sempre unidade por unidade"**: força a consulta por
+  unidade mesmo com todas ligadas. Custa uma volta inteira de consultas por
+  unidade — não é o padrão.
+- A linha de status mostra a unidade em curso: "Contratações — JF 1ª
+  Inst./CJF (órgão 1 de 9) — SECRETARIA DO CONSELHO… (unidade 3 de 5) —
+  Pregão eletrônico (2/117)…".
+
+Não alterado: Painel, Relatórios e a aba Preços ainda não têm recorte por
+unidade administrativa (em Preços, "unidade" é a unidade de medida do item).
+
 ## 2.15.0-jf.2 — 2026-10-03 (edição JF)
 
 **Corrigido — a linha de status da coleta agora diz de qual órgão é a volta**

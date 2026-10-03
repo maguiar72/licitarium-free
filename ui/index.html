@@ -242,6 +242,10 @@
         <option value="">Todas as situações</option></select>
       <select id="f-orgao" aria-label="Órgão">
         <option value="">Todos os órgãos</option></select>
+      <!-- edição JF: unidade administrativa dentro do órgão (CJF, TRF1,
+           cada seção judiciária…). Só aparece no acervo por órgãos. -->
+      <select id="f-unidade" class="oculto" aria-label="Unidade administrativa">
+        <option value="">Todas as unidades</option></select>
       <label class="check-filtro" id="cx-propostas">
         <input type="checkbox" id="f-propostas"> Propostas abertas</label>
       <label class="check-filtro" id="cx-parada"
@@ -713,6 +717,21 @@
         <span class="rotulo-persistente">Configuração persistente</span>
         <h4>Órgãos monitorados</h4>
         <div id="cfg-orgaos"></div>
+        <!-- edição JF: unidades administrativas de cada órgão -->
+        <div id="cfg-unidades-caixa" class="oculto" style="margin-top:14px">
+          <h4>Unidades de cada órgão</h4>
+          <div class="aviso" style="margin:0 0 8px">Desmarque as unidades que
+            não quer coletar. Enquanto todas as unidades de um órgão estão
+            marcadas, ele é baixado numa volta só; com alguma desmarcada,
+            passa a ser baixado unidade por unidade, só as marcadas. O que já
+            está no acervo não é apagado.</div>
+          <label class="check-filtro" style="display:flex; gap:6px;
+                 margin-bottom:8px; white-space:normal; align-items:flex-start">
+            <input type="checkbox" id="cfg-por-unidade">
+            <span>Coletar sempre unidade por unidade (mais lento: uma volta
+              de consultas para cada unidade)</span></label>
+          <div id="cfg-unidades"></div>
+        </div>
         <!-- rótulo de verdade, não só placeholder: o placeholder some no
              primeiro caractere digitado e não é nome acessível -->
         <div style="display:flex; gap:8px; margin-top:12px; align-items:flex-end; flex-wrap:wrap">

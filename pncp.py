@@ -159,10 +159,21 @@ def _codigo_unidade(valor):
 
 
 def unidades_excluidas(db):
-    """Conjunto de códigos de unidade (normalizados) que o acervo por órgãos
-    descarta. Vazio no modo município."""
+    """Conjunto de códigos de unidade (normalizados) que a predefinição
+    manda descartar em QUALQUER órgão do acervo — unidades alheias
+    cadastradas num CNPJ guarda-chuva. Vazio no modo município.
+
+    É a lista fixa de `config.unidades_excluidas`; a escolha do usuário,
+    unidade a unidade, mora na tabela `unidades` (`unidades_desligadas`)."""
     bruto = _config(db, "unidades_excluidas") or ""
     return {c for c in (_codigo_unidade(x) for x in bruto.split(",")) if c}
+
+
+def unidades_desligadas(db):
+    """Pares `(cnpj, código)` das unidades que o usuário desligou em
+    Sincronização. Registro delas não entra no acervo."""
+    return {(r[0], r[1]) for r in db.execute(
+        "SELECT cnpj, codigo FROM unidades WHERE ativo=0")}
 
 
 def _unidade_de(item):
@@ -173,6 +184,103 @@ def _unidade_de(item):
     return _codigo_unidade(
         unidade.get("codigoUnidade")
         or _primeiro(item, "codigoUnidadeOrgao", "codigoUnidade"))
+
+
+def _cnpj_de(item):
+    """CNPJ do órgão de um registro do PNCP, nas grafias dos endpoints."""
+    return ((item.get("orgaoEntidade") or {}).get("cnpj")
+            or _primeiro(item, "cnpjOrgao", "orgaoEntidadeCnpj", "cnpj"))
+
+
+def _registrar_unidade(db, item, vistas):
+    """Anota em `unidades` a unidade de um registro recém-chegado, se ainda
+    não estava lá — é assim que o catálogo se completa quando a consulta ao
+    cadastro do PNCP falha ou ainda não traz uma unidade nova. `vistas`
+    evita repetir o INSERT a cada registro da mesma unidade."""
+    cnpj, codigo = _cnpj_de(item), _unidade_de(item)
+    if not cnpj or not codigo or (cnpj, codigo) in vistas:
+        return
+    vistas.add((cnpj, codigo))
+    unidade = item.get("unidadeOrgao") or {}
+    db.execute(
+        "INSERT OR IGNORE INTO unidades"
+        " (cnpj, codigo, codigo_pncp, nome, municipio, uf, ativo, origem)"
+        " VALUES (?,?,?,?,?,?,1,'descoberta')",
+        (cnpj, codigo,
+         unidade.get("codigoUnidade")
+         or _primeiro(item, "codigoUnidadeOrgao", "codigoUnidade"),
+         unidade.get("nomeUnidade")
+         or _primeiro(item, "nomeUnidadeOrgao", "nomeUnidade"),
+         unidade.get("municipioNome"), unidade.get("ufSigla")))
+
+
+def sync_catalogo_unidades(db, cnpj, motor):
+    """Traz do cadastro do PNCP (`/v1/orgaos/{cnpj}/unidades`) as unidades
+    administrativas de um órgão e grava nome, município e UF.
+
+    Não mexe em `ativo` de unidade já conhecida (escolha do usuário).
+    Devolve quantas unidades o portal listou. Usa o cliente interno do
+    motor, como `Motor.consultar_orgao` — o motor 1.4.0 não expõe esta
+    consulta; `tests/test_unidades.py` segura a forma da resposta."""
+    cliente = getattr(motor, "_cliente", None)
+    if cliente is None:
+        return 0
+    lista = cliente.get(motor._base_pncp, f"/v1/orgaos/{cnpj}/unidades", {})
+    if isinstance(lista, dict):   # tolera resposta embrulhada/paginada
+        lista = lista.get("data") or lista.get("content") or []
+    n = 0
+    for u in lista or []:
+        codigo = _codigo_unidade(u.get("codigoUnidade"))
+        if not codigo:
+            continue
+        municipio = u.get("municipio") or {}
+        uf = municipio.get("uf") or {}
+        db.execute(
+            "INSERT INTO unidades"
+            " (cnpj, codigo, codigo_pncp, nome, municipio, uf, ativo, origem)"
+            " VALUES (?,?,?,?,?,?,1,'cadastro')"
+            " ON CONFLICT(cnpj, codigo) DO UPDATE SET"
+            "  codigo_pncp=excluded.codigo_pncp, nome=excluded.nome,"
+            "  municipio=COALESCE(excluded.municipio, municipio),"
+            "  uf=COALESCE(excluded.uf, uf), origem='cadastro'",
+            (cnpj, codigo, u.get("codigoUnidade"), u.get("nomeUnidade"),
+             municipio.get("nome") or u.get("municipioNome"),
+             (uf.get("siglaUF") if isinstance(uf, dict) else uf)
+             or u.get("ufSigla")))
+        n += 1
+    db.commit()
+    return n
+
+
+def coleta_por_unidade(db):
+    """True se o usuário pediu a fase 1 SEMPRE unidade por unidade."""
+    return _config(db, "coleta_por_unidade") == "1"
+
+
+def unidades_a_coletar(db, cnpj):
+    """Como a fase 1 deve consultar um CNPJ no acervo por órgãos.
+
+    Devolve `None` para "o CNPJ inteiro numa consulta só" — o caso comum e
+    o mais barato: uma volta de consultas, e o que for de unidade excluída
+    ou desligada é descartado na gravação. Devolve a lista de unidades
+    `(código normalizado, código como o PNCP escreve, nome)` quando a
+    consulta tem de ser UNIDADE POR UNIDADE (`codigoUnidadeAdministrativa`):
+      · o usuário desligou alguma unidade desse CNPJ — baixar o CNPJ
+        inteiro para jogar fora a maior parte não faz sentido; ou
+      · `config.coleta_por_unidade` está ligada.
+    Cada unidade custa uma volta inteira de consultas, então um CNPJ com 50
+    unidades ativas custa 50 voltas — por isso não é o padrão.
+    """
+    excluidas = unidades_excluidas(db)
+    linhas = [r for r in db.execute(
+        "SELECT codigo, codigo_pncp, nome, ativo FROM unidades"
+        " WHERE cnpj=? ORDER BY nome, codigo", (cnpj,))
+        if r[0] not in excluidas]
+    if not linhas:
+        return None   # catálogo vazio: só dá para consultar o CNPJ inteiro
+    if not coleta_por_unidade(db) and all(r[3] for r in linhas):
+        return None
+    return [(r[0], r[1] or r[0], r[2] or r[0]) for r in linhas if r[3]]
 
 
 def modo_orgaos(db):
@@ -309,13 +417,15 @@ def _upsert_contratacao(db, item, ibge=None, referencia=0):
     db.execute(
         """INSERT OR REPLACE INTO contratacoes
            (numero_controle, ano, sequencial, orgao_cnpj, orgao_nome, unidade,
+            unidade_codigo,
             modalidade_id, modalidade_nome, situacao, objeto,
             valor_estimado, valor_homologado, data_encerramento_proposta,
             data_publicacao, data_atualizacao,
             referencia, municipio_ibge, raw, sync_em)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (numero, item.get("anoCompra"), item.get("sequencialCompra"),
          orgao.get("cnpj"), orgao.get("razaoSocial"), unidade.get("nomeUnidade"),
+         _unidade_de(item) or None,
          item.get("modalidadeId"), item.get("modalidadeNome"),
          item.get("situacaoCompraNome"), item.get("objetoCompra"),
          _num(item.get("valorTotalEstimado")), _num(item.get("valorTotalHomologado")),
@@ -337,8 +447,8 @@ def _upsert_contrato(db, item):
             fornecedor_ni, fornecedor_nome, objeto, valor_global,
             vigencia_inicio, vigencia_fim, data_assinatura,
             data_publicacao, data_atualizacao,
-            raw, sync_em)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            raw, sync_em, unidade_codigo)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (numero,
          _primeiro(item, "numeroControlePncpCompra", "numeroControlePNCPCompra"),
          orgao.get("cnpj"),
@@ -350,7 +460,8 @@ def _upsert_contrato(db, item):
          _primeiro(item, "dataVigenciaFim", "vigenciaFim"),
          item.get("dataAssinatura"),
          item.get("dataPublicacaoPncp"), item.get("dataAtualizacao"),
-         json.dumps(item, ensure_ascii=False), datetime.now().isoformat()))
+         json.dumps(item, ensure_ascii=False), datetime.now().isoformat(),
+         _unidade_de(item) or None))
     return True
 
 
@@ -363,8 +474,8 @@ def _upsert_ata(db, item):
            (numero_controle, contratacao_controle, orgao_cnpj,
             numero_ata, ano_ata, objeto,
             vigencia_inicio, vigencia_fim, data_assinatura, data_publicacao,
-            data_atualizacao, raw, sync_em)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            data_atualizacao, raw, sync_em, unidade_codigo)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (numero,
          _primeiro(item, "numeroControlePNCPCompra", "numeroControlePncpCompra"),
          _primeiro(item, "cnpjOrgao", "cnpj"),
@@ -374,7 +485,8 @@ def _upsert_ata(db, item):
          _primeiro(item, "vigenciaFim", "dataVigenciaFim"),
          item.get("dataAssinatura"), item.get("dataPublicacaoPncp"),
          _primeiro(item, "dataAtualizacao", "dataAtualizacaoGlobal"),
-         json.dumps(item, ensure_ascii=False), datetime.now().isoformat()))
+         json.dumps(item, ensure_ascii=False), datetime.now().isoformat(),
+         _unidade_de(item) or None))
     return True
 
 
@@ -479,18 +591,27 @@ def sync_contratacoes(db, codigo_ibge, inicio, fim, motor=None, referencia=0,
 
 
 def _filtrando_unidade(db, upsert):
-    """Gravador de `_baixar_lote` que descarta registro de unidade excluída.
+    """Gravador de `_baixar_lote` que descarta registro de unidade excluída
+    (predefinição) ou desligada (usuário) e, no acervo por órgãos, anota a
+    unidade de cada registro no catálogo.
 
-    Lê a lista uma vez por fase (não por registro). No modo município a
-    lista é vazia e o gravador é o upsert de sempre."""
+    Lê as listas uma vez por fase (não por registro). No modo município
+    não há lista nem catálogo e o gravador é o upsert de sempre."""
+    por_orgaos = modo_orgaos(db)
     excluidas = unidades_excluidas(db)
-    if not excluidas:
+    desligadas = unidades_desligadas(db)
+    if not por_orgaos and not excluidas and not desligadas:
         return lambda registro: upsert(db, registro.raw)
+    vistas = set()
 
     def gravar(registro):
-        if _unidade_de(registro.raw) in excluidas:
+        raw = registro.raw
+        codigo = _unidade_de(raw)
+        if codigo in excluidas or (_cnpj_de(raw), codigo) in desligadas:
             return False
-        return upsert(db, registro.raw)
+        if por_orgaos:
+            _registrar_unidade(db, raw, vistas)
+        return upsert(db, raw)
     return gravar
 
 
@@ -515,7 +636,8 @@ def janela_orgaos_dias(db):
     return dias if 1 <= dias <= 364 else JANELA_ORGAO_DIAS
 
 
-def sync_contratacoes_orgao(db, cnpj, inicio, fim, motor=None, progresso=None):
+def sync_contratacoes_orgao(db, cnpj, inicio, fim, motor=None, progresso=None,
+                            unidade=None):
     """Fase 1 do acervo por órgãos: contratações de UM CNPJ, por modalidade
     e janela de datas.
 
@@ -527,13 +649,20 @@ def sync_contratacoes_orgao(db, cnpj, inicio, fim, motor=None, progresso=None):
     `tests/test_orgaos_modo.py` quebra se a assinatura mudar.
 
     Grava com `municipio_ibge=IBGE_ORGAOS` e `referencia=0` (acervo próprio)
-    e descarta as unidades de `config.unidades_excluidas`.
+    e descarta as unidades excluídas ou desligadas.
+
+    `unidade` (código como o PNCP escreve, ex.: "090026") restringe a
+    consulta a uma unidade administrativa (`codigoUnidadeAdministrativa`,
+    conferido contra a API em 2026-10-03).
     """
     motor = motor or Motor(user_agent=USER_AGENT, config=CONFIG_MOTOR)
     dias = janela_orgaos_dias(db)
+    filtro = {"cnpj": cnpj}
+    if unidade:
+        filtro["codigoUnidadeAdministrativa"] = unidade
     consultas = [(nome, {"dataInicial": amd(a), "dataFinal": amd(b),
                          "codigoModalidadeContratacao": codigo,
-                         "cnpj": cnpj})
+                         **filtro})
                  for codigo, nome in MODALIDADES.items()
                  for a, b in janelas(inicio, fim, dias)]
     registros = motor._baixar_com_disjuntor(
@@ -616,14 +745,15 @@ def _upsert_pca(db, plano):
             """INSERT OR REPLACE INTO pca_itens
                (id, id_pca, ano, orgao_cnpj, unidade, numero_item, descricao,
                 categoria, grupo, quantidade, valor_total, data_atualizacao,
-                raw, sync_em)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                raw, sync_em, unidade_codigo)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (f"{id_pca}#{numero}", id_pca, plano.get("anoPca"),
              plano.get("orgaoEntidadeCnpj"), plano.get("nomeUnidade"), numero,
              item.get("descricaoItem"), item.get("nomeClassificacaoCatalogo"),
              item.get("grupoContratacaoNome"), _num(item.get("quantidadeEstimada")),
              _num(item.get("valorTotal")), item.get("dataAtualizacao"),
-             json.dumps(item, ensure_ascii=False), agora))
+             json.dumps(item, ensure_ascii=False), agora,
+             _unidade_de(plano) or None))
         n += 1
     return n
 
@@ -978,20 +1108,58 @@ def sincronizar_tudo(db, codigo_ibge, progresso=None, forcado=True,
             "SELECT cnpj FROM orgaos WHERE ativo=1 ORDER BY cnpj").fetchall()]
         total, falhou, inicios = 0, False, []
         for i, cnpj in enumerate(cnpjs, 1):
-            chave = f"contratacoes_{cnpj}"
-            inicio = janela_de(chave)
-            inicios.append(inicio)
-            em_curso["orgao"] = rotulo_orgao(db, cnpj, i, len(cnpjs))
-            if progresso:
-                progresso("Contratações…")
-            try:
-                total += sync_contratacoes_orgao(
-                    db, cnpj, inicio, hoje, motor=motor, progresso=progresso)
-                _config(db, f"last_sync_{chave}", hoje.isoformat())
-            except PncpErro as e:
-                falhou = True
-                _log(db, "contratacoes", inicio, hoje, total, "erro",
-                     f"{cnpj}: {e}")
+            orgao = rotulo_orgao(db, cnpj, i, len(cnpjs))
+            em_curso["orgao"] = orgao
+            # catálogo de unidades: uma vez por CNPJ. Se o portal não
+            # responder, a coleta segue — as unidades aparecem conforme os
+            # registros chegam, e a consulta é tentada de novo na próxima.
+            if not _config(db, f"unidades_catalogo_{cnpj}"):
+                if progresso:
+                    progresso("Unidades…")
+                try:
+                    sync_catalogo_unidades(db, cnpj, motor)
+                    _config(db, f"unidades_catalogo_{cnpj}", hoje.isoformat())
+                except PncpErro as e:
+                    _log(db, "unidades", hoje, hoje, 0, "erro", f"{cnpj}: {e}")
+            unidades = unidades_a_coletar(db, cnpj)
+            if unidades is None:
+                # o CNPJ inteiro numa volta só
+                chave = f"contratacoes_{cnpj}"
+                inicio = janela_de(chave)
+                inicios.append(inicio)
+                if progresso:
+                    progresso("Contratações…")
+                try:
+                    total += sync_contratacoes_orgao(
+                        db, cnpj, inicio, hoje, motor=motor,
+                        progresso=progresso)
+                    _config(db, f"last_sync_{chave}", hoje.isoformat())
+                except PncpErro as e:
+                    falhou = True
+                    _log(db, "contratacoes", inicio, hoje, total, "erro",
+                         f"{cnpj}: {e}")
+                continue
+            # unidade por unidade, cada uma com a própria marca d'água; a
+            # do CNPJ inteiro (se houver, de quando ele era coletado numa
+            # volta só) vale como piso — o que ela cobre não se rebaixa
+            for j, (codigo, codigo_pncp, nome) in enumerate(unidades, 1):
+                chave = f"contratacoes_{cnpj}_{codigo}"
+                inicio = max(janela_de(chave), janela_de(f"contratacoes_{cnpj}"))
+                inicios.append(inicio)
+                curto = nome if len(nome) <= 34 else nome[:33].rstrip() + "…"
+                em_curso["orgao"] = (f"{orgao} — {curto} "
+                                     f"(unidade {j} de {len(unidades)})")
+                if progresso:
+                    progresso("Contratações…")
+                try:
+                    total += sync_contratacoes_orgao(
+                        db, cnpj, inicio, hoje, motor=motor,
+                        progresso=progresso, unidade=codigo_pncp)
+                    _config(db, f"last_sync_{chave}", hoje.isoformat())
+                except PncpErro as e:
+                    falhou = True
+                    _log(db, "contratacoes", inicio, hoje, total, "erro",
+                         f"{cnpj} unidade {codigo_pncp}: {e}")
         em_curso["orgao"] = ""
         if not falhou:
             _config(db, "last_sync_contratacoes", hoje.isoformat())

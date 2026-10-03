@@ -479,6 +479,9 @@ async function carregarFiltros() {
   preencher($("f-situacao"), f.situacoes);
   preencher($("f-orgao"),
             f.orgaos.map(o => ({nome: o.nome ?? o.cnpj, id: o.cnpj})));
+  // edição JF: unidades administrativas — a lista depende do órgão escolhido
+  estado.unidadesAdm = f.unidades_adm ?? [];
+  preencherUnidades();
   preencher($("pr-ano"), f.anos);
   preencher($("pr-orgao"),
             f.orgaos.map(o => ({nome: o.nome ?? o.cnpj, id: o.cnpj})));
@@ -488,11 +491,28 @@ async function carregarFiltros() {
     m => ({nome: m.nome, id: m.id})));
 }
 
+// Opções do filtro de unidade: as do órgão escolhido, ou todas quando não
+// há órgão no filtro. Some por inteiro quando o acervo não tem unidades
+// (modo município). Preserva a escolha se ela ainda couber no recorte.
+function preencherUnidades() {
+  const sel = $("f-unidade");
+  const orgao = $("f-orgao").value;
+  const lista = (estado.unidadesAdm ?? []).filter(
+    u => !orgao || u.cnpj === orgao);
+  const atual = sel.value;
+  sel.length = 1;
+  lista.forEach(u => sel.add(new Option(
+    `${u.nome}${u.uf ? " — " + u.uf : ""} (${u.n})`, u.id)));
+  sel.value = lista.some(u => u.id === atual) ? atual : "";
+  sel.classList.toggle("oculto", !(estado.unidadesAdm ?? []).length);
+}
+
 function filtrosAtuais() {
   return { ano: $("f-ano").value || null,
            modalidade: $("f-modalidade").value || null,
            situacao: $("f-situacao").value || null,
            orgao: $("f-orgao").value || null,
+           unidade_adm: $("f-unidade").value || null,
            propostas: $("f-propostas").checked || null,
            vigentes: $("f-vigentes").checked || null,
            vencendo: $("f-vence60").checked || null,
@@ -505,7 +525,7 @@ function filtrosAtuais() {
 
 // [rótulo, chave de ordenação na whitelist do backend — null = não ordenável]
 const CAMPOS_FILTRO = ["f-ano", "f-modalidade", "f-situacao", "f-orgao",
-                       "f-busca"];
+                       "f-unidade", "f-busca"];
 const CAIXAS_FILTRO = ["f-propostas", "f-vigentes", "f-vence60", "f-parada"];
 
 function temFiltroAtivo() {
@@ -516,6 +536,7 @@ function temFiltroAtivo() {
 
 function limparFiltros() {
   CAMPOS_FILTRO.forEach(id => $(id).value = "");
+  preencherUnidades();   // sem órgão no filtro, voltam todas as unidades
   CAIXAS_FILTRO.forEach(id => $(id).checked = false);
   estado.objetosAlvo = null;
   estado.pagina = 1;
@@ -1089,6 +1110,8 @@ function irPara(tipo, ajustes = {}) {
   $("f-modalidade").value = ajustes.modalidade ?? "";
   $("f-situacao").value = ajustes.situacao ?? "";
   $("f-orgao").value = ajustes.orgao ?? "";
+  preencherUnidades();
+  $("f-unidade").value = ajustes.unidade_adm ?? "";
   $("f-propostas").checked = !!ajustes.propostas;
   $("f-vigentes").checked = !!ajustes.vigentes;
   $("f-vence60").checked = !!ajustes.vencendo;
@@ -1102,7 +1125,10 @@ $("kpi-card-homologado").addEventListener("click",
   () => irPara("contratacoes", {ano: String(new Date().getFullYear())}));
 $("kpi-card-vigentes").addEventListener("click",
   () => irPara("contratos", {vigentes: true, ord: "vigencia", dir: "asc"}));
-["f-ano","f-modalidade","f-situacao","f-orgao"].forEach(id =>
+// trocar o órgão refaz a lista de unidades ANTES de carregar: a unidade
+// escolhida pode não ser do órgão novo
+$("f-orgao").addEventListener("change", preencherUnidades);
+["f-ano","f-modalidade","f-situacao","f-orgao","f-unidade"].forEach(id =>
   $(id).addEventListener("change", () => { estado.pagina = 1; carregarLista(); }));
 let buscaTimer;
 $("f-busca").addEventListener("input", () => {
@@ -2147,6 +2173,56 @@ $("veu-config").querySelectorAll("[data-secao-cfg]").forEach(b =>
 // configuração PERSISTENTE de sync, movida do modal Configurações pro modal
 // de Sincronização (pedido do usuário, 2026-09-12) — recarrega toda vez
 // que o modal de sync abre, e de novo depois de add/remover órgão.
+// edição JF: unidades administrativas de cada órgão, com liga/desliga.
+// Um <details> por órgão (fechado: a JF tem dezenas de unidades num CNPJ).
+async function carregarUnidadesSync(orgaos) {
+  const r = api.listar_unidades ? await api.listar_unidades() : null;
+  const unidades = r?.unidades ?? [];
+  $("cfg-unidades-caixa").classList.toggle("oculto", !unidades.length);
+  if (!unidades.length) return;
+  $("cfg-por-unidade").checked = !!r.por_unidade;
+  const abertos = new Set([...$("cfg-unidades").querySelectorAll("details[open]")]
+    .map(d => d.dataset.cnpj));
+  const porOrgao = new Map();
+  unidades.forEach(u => {
+    if (!porOrgao.has(u.cnpj)) porOrgao.set(u.cnpj, []);
+    porOrgao.get(u.cnpj).push(u);
+  });
+  const nomeOrgao = cnpj =>
+    orgaos.find(o => o.cnpj === cnpj)?.razao_social ?? cnpj;
+  $("cfg-unidades").innerHTML = [...porOrgao].map(([cnpj, lista]) => {
+    const marcadas = lista.filter(u => u.ativo && !u.excluida).length;
+    return `<details data-cnpj="${esc(cnpj)}" ${abertos.has(cnpj) ? "open" : ""}
+        style="margin-bottom:6px">
+      <summary style="cursor:pointer">${esc(nomeOrgao(cnpj))}
+        <small class="dim">— ${marcadas} de ${lista.length} unidades marcadas</small></summary>
+      <div style="margin:6px 0">
+        <button class="btn ghost" data-todas="1" data-cnpj="${esc(cnpj)}">Marcar todas</button>
+        <button class="btn ghost" data-todas="0" data-cnpj="${esc(cnpj)}">Desmarcar todas</button>
+      </div>
+      ${lista.map(u => `<div class="orgrow"><span>${esc(u.nome)}
+          <small>${esc(u.codigo)}${u.municipio ? " · " + esc(u.municipio)
+            + (u.uf ? "/" + esc(u.uf) : "") : ""} · ${u.n} contratações${
+            u.excluida ? " · fora do grupo (excluída pela predefinição)" : ""}</small></span>
+        <input type="checkbox" data-ucnpj="${esc(u.cnpj)}" data-ucodigo="${esc(u.codigo)}"
+          ${u.ativo && !u.excluida ? "checked" : ""}
+          aria-label="Coletar ${esc(u.nome)}"></div>`).join("")}
+    </details>`;
+  }).join("");
+  $("cfg-unidades").querySelectorAll("input[data-ucodigo]").forEach(c =>
+    c.addEventListener("change", async () => {
+      await api.set_unidade_ativa(c.dataset.ucnpj, c.dataset.ucodigo, c.checked);
+      carregarUnidadesSync(orgaos);
+    }));
+  $("cfg-unidades").querySelectorAll("button[data-todas]").forEach(b =>
+    b.addEventListener("click", async () => {
+      await api.set_unidades_ativas(b.dataset.cnpj, b.dataset.todas === "1");
+      carregarUnidadesSync(orgaos);
+    }));
+}
+$("cfg-por-unidade").addEventListener("change", e =>
+  api.set_coleta_por_unidade(e.target.checked));
+
 async function carregarConfigSync() {
   const [e, orgaos, log] = await Promise.all([
     api.get_estado(), api.listar_orgaos(), api.ultimo_log()]);
@@ -2160,6 +2236,7 @@ async function carregarConfigSync() {
   $("cfg-orgaos").querySelectorAll("input[data-cnpj]").forEach(c =>
     c.addEventListener("change", () =>
       api.set_orgao_ativo(c.dataset.cnpj, c.checked)));
+  await carregarUnidadesSync(orgaos);
   $("ref-ordem").value = e.ref_ordem || "tamanho";
   $("cfg-log").innerHTML = log.map(l =>
     `<div class="logline">${esc(l.iniciado_em?.slice(0,16).replace("T"," "))} ·

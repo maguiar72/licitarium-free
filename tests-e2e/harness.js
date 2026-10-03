@@ -201,7 +201,9 @@ function scriptPonte(temaBanco = "portal") {
         unidades: [{ nome: "Unidade", n: 12 }, { nome: "Caixa", n: 4 },
                    { nome: "Serviço", n: 1 }],
         municipios: [{ id: "3534203", nome: "Orindiúva" },
-                     { id: "3535002", nome: "Palestina" }] }),
+                     { id: "3535002", nome: "Palestina" }],
+        // edição JF: vazio (modo município) a menos que o teste combine
+        unidades_adm: window.__unidadesAdm ?? [] }),
       listar: async (tipo, filtros, pagina) => {
         window.__chamadas.push({ metodo: "listar", tipo, filtros, pagina });
         let itens = DADOS[tipo] || [];
@@ -759,6 +761,25 @@ function scriptPonte(temaBanco = "portal") {
         return { ok: true };
       },
       // edição JF — acervo por órgãos (CNPJ)
+      listar_unidades: async () => ({
+        unidades: window.__unidadesAdm ?? [], por_unidade: false }),
+      set_unidade_ativa: async (cnpj, codigo, ativo) => {
+        window.__chamadas.push({ metodo: "set_unidade_ativa", cnpj, codigo, ativo });
+        const u = (window.__unidadesAdm ?? []).find(
+          x => x.cnpj === cnpj && x.codigo === codigo);
+        if (u) u.ativo = ativo;
+        return true;
+      },
+      set_unidades_ativas: async (cnpj, ativo) => {
+        window.__chamadas.push({ metodo: "set_unidades_ativas", cnpj, ativo });
+        (window.__unidadesAdm ?? []).filter(x => x.cnpj === cnpj)
+          .forEach(x => { x.ativo = ativo; });
+        return true;
+      },
+      set_coleta_por_unidade: async ligada => {
+        window.__chamadas.push({ metodo: "set_coleta_por_unidade", ligada });
+        return true;
+      },
       predefinicoes: async () => [{ chave: "jf", nome: "Justiça Federal",
         descricao: "CJF, TRFs da 1ª à 6ª Região e seções judiciárias",
         orgaos: [
