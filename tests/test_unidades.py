@@ -338,3 +338,12 @@ def test_banco_antigo_e_reprojetado_do_raw(tmp_path, monkeypatch):
             "090026", "SECRETARIA DO CJF", "DF")
     finally:
         db.close()
+
+
+def test_catalogo_vazio_ou_irreconhecivel_e_tentado_de_novo(db):
+    _acervo(db)
+    motor = MotorUnidades(REGISTROS, catalogo=[{"campoInesperado": 1}])
+    pncp.sincronizar_tudo(db, pncp.IBGE_ORGAOS, motor=motor)
+    assert pncp._config(db, f"unidades_catalogo_{GUARDA}") is None
+    # as unidades entram mesmo assim, pelos registros
+    assert set(_unidades(db)) == {"90026", "90012"}

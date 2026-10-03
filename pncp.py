@@ -1117,8 +1117,12 @@ def sincronizar_tudo(db, codigo_ibge, progresso=None, forcado=True,
                 if progresso:
                     progresso("Unidades…")
                 try:
-                    sync_catalogo_unidades(db, cnpj, motor)
-                    _config(db, f"unidades_catalogo_{cnpj}", hoje.isoformat())
+                    # só dá o catálogo por consultado se veio alguma unidade:
+                    # resposta vazia (ou em formato que não reconhecemos)
+                    # é tentada de novo na próxima sincronização
+                    if sync_catalogo_unidades(db, cnpj, motor):
+                        _config(db, f"unidades_catalogo_{cnpj}",
+                                hoje.isoformat())
                 except PncpErro as e:
                     _log(db, "unidades", hoje, hoje, 0, "erro", f"{cnpj}: {e}")
             unidades = unidades_a_coletar(db, cnpj)
