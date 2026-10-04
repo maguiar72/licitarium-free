@@ -39,7 +39,7 @@ exe = EXE(
     a.scripts,
     a.binaries,
     a.datas,
-    name=f'Licitarium Free v{VERSAO}',
+    name=f'Licitarium Free CJF v{VERSAO}',
     icon='design/licitarium.ico',
     console=False,
     upx=False,

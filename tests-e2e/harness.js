@@ -780,7 +780,7 @@ function scriptPonte(temaBanco = "portal") {
         window.__chamadas.push({ metodo: "set_coleta_por_unidade", ligada });
         return true;
       },
-      predefinicoes: async () => [{ chave: "jf", nome: "Justiça Federal",
+      predefinicoes: async () => window.__predefs ?? [{ chave: "jf", nome: "Justiça Federal",
         descricao: "CJF, TRFs da 1ª à 6ª Região e seções judiciárias",
         orgaos: [
           { cnpj: "00508903000188", nome: "Justiça Federal de Primeira Instância" },

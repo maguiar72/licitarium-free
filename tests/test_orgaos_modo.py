@@ -42,6 +42,16 @@ def sem_espera_de_repescagem(monkeypatch):
     monkeypatch.setattr(pncp, "REPESCAGEM_PAUSA", 0)
 
 
+@pytest.fixture(autouse=True)
+def sem_edicao_fixa(monkeypatch):
+    """Estes testes seguram o motor GERAL do acervo por órgãos (predefinição
+    da JF, CNPJs digitados). Neste ramo o programa sai fechado no CJF
+    (`pncp.EDICAO_FIXA`); o que é próprio da edição está em
+    `test_edicao_cjf.py`."""
+    monkeypatch.setattr(pncp, "EDICAO_FIXA", None)
+    monkeypatch.setattr(licitarium, "SUFIXO_EDICAO", "jf")
+
+
 def contratacao(numero, cnpj=GUARDA_CHUVA, unidade="090026", **extra):
     base = {
         "numeroControlePNCP": numero, "anoCompra": 2026, "sequencialCompra": 1,

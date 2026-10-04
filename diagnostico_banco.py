@@ -8,7 +8,7 @@ Abre em modo somente-leitura — não altera nada no banco.
 import sqlite3
 from pathlib import Path
 
-ARQUIVO_DB = Path.home() / "AppData" / "Local" / "Licitarium" / "licitarium.db"
+ARQUIVO_DB = Path.home() / "AppData" / "Local" / "LicitariumCJF" / "licitarium.db"
 
 
 def principal():

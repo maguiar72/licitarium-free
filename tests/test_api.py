@@ -738,24 +738,18 @@ def test_detalhe_ata_com_fornecedor_concatenado_vira_lista_de_vencedores(api):
     assert [v["nome"] for v in vencedores] == ["Fornecedor 1", "Fornecedor 2"]
 
 
-def test_asset_do_auto_update_aceita_todos_os_nomes_ja_publicados():
-    """O nome do exe mudou duas vezes: ganhou a versão (1.2.4) e o "Free"
-    (1.35.0). O casamento é por padrão porque a checagem roda contra
-    releases de qualquer época — inclusive as antigas, que continuam no
-    GitHub com o nome de então.
+def test_asset_do_auto_update_so_aceita_o_exe_da_edicao_cjf():
+    """Edição CJF: as releases moram no mesmo repositório das da edição JF,
+    então o casamento exige o "CJF" no nome — o exe da outra edição (ou do
+    original) nunca é baixado por engano no lugar deste.
     """
-    padrao = re.compile(r"Licitarium([ .]Free)?([ .]v[\d.]+)?\.exe")
-    # o GitHub troca espaço por ponto no nome do anexo: o arquivo sobe como
-    # "Licitarium Free v1.35.0.exe" e a release publica
-    # "Licitarium.Free.v1.35.0.exe"
-    assert padrao.fullmatch("Licitarium.Free.v1.35.0.exe")
-    assert padrao.fullmatch("Licitarium Free v1.35.0.exe")
-    assert padrao.fullmatch("Licitarium.v1.2.4.exe")   # 1.2.4 até 1.34.0
-    assert padrao.fullmatch("Licitarium v1.2.4.exe")
-    assert padrao.fullmatch("Licitarium.exe")          # releases até a 1.2.3
-    for fora in ("licitarium.exe", "OutroLicitarium.exe",
-                 "Licitarium.v1.2.4.zip", "Licitarium.exe.txt",
-                 "LicitariumFree.exe"):   # sem separador não é o nosso
+    padrao = re.compile(r"Licitarium[ .]Free[ .]CJF([ .]v[\d.]+)?\.exe")
+    # o GitHub troca espaço por ponto no nome do anexo
+    assert padrao.fullmatch("Licitarium.Free.CJF.v2.15.0.exe")
+    assert padrao.fullmatch("Licitarium Free CJF v2.15.0.exe")
+    for fora in ("Licitarium.Free.v2.15.0.exe", "Licitarium.v1.2.4.exe",
+                 "Licitarium.exe", "Licitarium.Free.CJF.v2.15.0.zip",
+                 "LicitariumFreeCJF.exe"):
         assert not padrao.fullmatch(fora), fora
     # e é o mesmo padrão que o código usa
     fonte = (licitarium.DIR_APP / "licitarium.py").read_text(encoding="utf-8")
@@ -764,7 +758,9 @@ def test_asset_do_auto_update_aceita_todos_os_nomes_ja_publicados():
 
 def test_spec_nomeia_o_exe_com_a_versao_do_codigo():
     spec = (licitarium.DIR_APP / "Licitarium.spec").read_text(encoding="utf-8")
-    assert "name=f'Licitarium Free v{VERSAO}'" in spec
+    # edição CJF: o exe leva o nome da edição, para não se confundir com o
+    # da edição JF nem com o original na mesma pasta de downloads
+    assert "name=f'Licitarium Free CJF v{VERSAO}'" in spec
     # a versão é lida de licitarium.py; cópia fixa aqui sairia de sincronia
     assert "licitarium.py" in spec and "re.search" in spec
 

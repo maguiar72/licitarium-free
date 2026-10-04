@@ -1,5 +1,28 @@
 # Changelog
 
+## 2.15.0-cjf.1 — 2026-10-03 (edição CJF, ramo `cjf-apenas`)
+
+**Edição que busca apenas o Conselho da Justiça Federal**
+
+Derivada da edição JF.3 (ramo `jf-orgaos-por-cnpj`). O CJF não tem CNPJ
+próprio no PNCP: publica como unidade administrativa do CNPJ da Justiça
+Federal (00.508.903/0001-88). Esta edição fecha o acervo nas duas unidades
+do Conselho — 090026 (Secretaria do Conselho da Justiça Federal) e 090001
+(Conselho da Justiça Federal).
+
+- O assistente inicial só oferece o CJF: sem município, sem a JF inteira,
+  sem CNPJs digitados. Resta escolher o ano inicial da coleta.
+- A fase 1 consulta só essas unidades, uma a uma
+  (`codigoUnidadeAdministrativa`), e nunca o CNPJ inteiro. O catálogo de
+  unidades do PNCP não é buscado.
+- Contratos, atas e PCA — que o portal só filtra por CNPJ — são baixados do
+  CNPJ da Justiça Federal e têm descartado, na gravação, tudo que não é das
+  unidades do CJF (`config.unidades_somente`).
+- Banco em pasta própria (`%LOCALAPPDATA%\\LicitariumCJF`): convive com a
+  edição JF e com o Licitarium original na mesma máquina.
+- Executável "Licitarium Free CJF vX.Y.Z.exe"; a checagem de atualização só
+  reconhece releases `vX.Y.Z-cjf.N`.
+
 ## 2.15.0-jf.3 — 2026-10-03 (edição JF)
 
 **Adicionado — unidades administrativas: filtro no acervo e coleta por unidade**

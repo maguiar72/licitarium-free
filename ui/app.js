@@ -238,6 +238,11 @@ const NOTA_WIZ = {
   municipio: "O histórico completo desde 2021 será baixado do PNCP na "
     + "primeira sincronização — pode levar alguns minutos. Nada é enviado a "
     + "terceiros: o Licitarium apenas lê dados públicos.",
+  cjf: "As contratações, contratos, atas e planos do CJF serão baixados "
+    + "do PNCP na primeira sincronização — pode levar de alguns minutos a "
+    + "uma hora, conforme o ano inicial, e pode ser interrompida e "
+    + "retomada. Nada é enviado a terceiros: o Licitarium apenas lê dados "
+    + "públicos.",
   orgaos: "As contratações, contratos, atas e planos desses órgãos serão "
     + "baixados do PNCP na primeira sincronização. Para um grupo grande, "
     + "como a Justiça Federal inteira, a primeira coleta leva horas — pode "
@@ -252,7 +257,10 @@ function wizAtualizarModo() {
   const orgaos = wizModo() === "orgaos";
   $("wiz-campos-orgaos").classList.toggle("oculto", !orgaos);
   $("wiz-campos-municipio").classList.toggle("oculto", orgaos);
-  $("wiz-nota").textContent = NOTA_WIZ[orgaos ? "orgaos" : "municipio"];
+  const fixa = wizPredefs.length === 1 && !!wizPredefs[0].fixa;
+  $("wiz-nota").textContent = NOTA_WIZ[
+    !orgaos ? "municipio" : fixa ? (NOTA_WIZ[wizPredefs[0].chave] ? wizPredefs[0].chave : "orgaos")
+            : "orgaos"];
   $("wiz-ok").disabled = !orgaos && !wizEscolha;
   if (orgaos) wizAtualizarPredef();
 }
@@ -260,10 +268,14 @@ function wizAtualizarPredef() {
   const chave = $("wiz-predef").value;
   const p = wizPredefs.find(x => x.chave === chave);
   $("wiz-cnpjs-caixa").classList.toggle("oculto", !!p);
-  $("wiz-predef-lista").innerHTML = p
-    ? `${esc(p.descricao)} — ${p.orgaos.length} CNPJs:<br>` + p.orgaos.map(o =>
-        `<span class="dim">${esc(o.cnpj)}</span> ${esc(o.nome)}`).join("<br>")
-    : "";
+  // grupo com lista fechada de unidades (edição CJF): mostra as unidades,
+  // que são o recorte de verdade — o CNPJ é o da Justiça Federal inteira
+  $("wiz-predef-lista").innerHTML = !p ? ""
+    : p.unidades?.length
+      ? `${esc(p.descricao)}:<br>` + p.unidades.map(u => esc(u)).join("<br>")
+        + `<br><span class="dim">CNPJ ${esc(p.orgaos[0].cnpj)}</span>`
+      : `${esc(p.descricao)} — ${p.orgaos.length} CNPJs:<br>` + p.orgaos.map(o =>
+          `<span class="dim">${esc(o.cnpj)}</span> ${esc(o.nome)}`).join("<br>");
   $("wiz-orgaos-erro").textContent = "";
 }
 async function iniciarWizard() {
@@ -278,7 +290,17 @@ async function iniciarWizard() {
     // ponte antiga (ou mock de teste) sem o método: só "outros órgãos"
     wizPredefs = api.predefinicoes ? await api.predefinicoes() : [];
     wizPredefs.forEach(p => predef.add(new Option(p.nome, p.chave)));
-    predef.add(new Option("Outros órgãos — informar CNPJs", ""));
+    // edição de um grupo só (edição CJF): não há o que escolher — somem a
+    // escolha município/órgãos, o seletor de grupo e os CNPJs digitados
+    // !! de propósito: classList.toggle(nome, undefined) ALTERNA em vez de
+    // desligar — sem o booleano, um grupo sem `fixa` escondia o seletor
+    const fixa = wizPredefs.length === 1 && !!wizPredefs[0].fixa;
+    $("wiz-modos").style.display = fixa ? "none" : "";
+    $("wiz-predef").classList.toggle("oculto", fixa);
+    document.querySelector('label[for="wiz-predef"]').classList.toggle("oculto", fixa);
+    if (fixa) $("wiz-subtitulo").textContent =
+      `Repositório de contratações públicas — ${wizPredefs[0].nome}`;
+    else predef.add(new Option("Outros órgãos — informar CNPJs", ""));
     const desde = $("wiz-desde");
     for (let ano = 2021; ano <= new Date().getFullYear(); ano++)
       desde.add(new Option(ano === 2021 ? "2021 (todo o histórico do PNCP)"
@@ -380,7 +402,7 @@ async function iniciarApp(e) {
     ? `Contratações públicas — ${e.municipio}`
     : `Contratações públicas de ${e.municipio} · ${e.uf}`;
   api.set_titulo(porOrgaos
-    ? `Licitarium Free ${e.versao} — ${e.municipio}`
+    ? `Licitarium Free ${e.edicao?.startsWith("CJF") ? "CJF " : ""}${e.versao} — ${e.municipio}`
     : `Licitarium Free ${e.versao} — ${e.municipio}/${e.uf}`);
   progressoSplash(0.6, rotuloAcervo);
   mostrarUltimaSync(e.sincronizado_em);
@@ -2181,6 +2203,10 @@ async function carregarUnidadesSync(orgaos) {
   $("cfg-unidades-caixa").classList.toggle("oculto", !unidades.length);
   if (!unidades.length) return;
   $("cfg-por-unidade").checked = !!r.por_unidade;
+  // lista fechada de unidades (edição CJF): a coleta já é sempre por
+  // unidade, e o texto sobre "volta só" não se aplica
+  $("cfg-por-unidade-caixa").classList.toggle("oculto", !!r.fixas);
+  $("cfg-unidades-aviso").classList.toggle("oculto", !!r.fixas);
   const abertos = new Set([...$("cfg-unidades").querySelectorAll("details[open]")]
     .map(d => d.dataset.cnpj));
   const porOrgao = new Map();

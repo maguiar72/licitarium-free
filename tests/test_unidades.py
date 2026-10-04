@@ -42,6 +42,12 @@ def sem_espera_de_repescagem(monkeypatch):
     monkeypatch.setattr(pncp, "REPESCAGEM_PAUSA", 0)
 
 
+@pytest.fixture(autouse=True)
+def sem_edicao_fixa(monkeypatch):
+    # motor geral das unidades; a edição CJF tem `test_edicao_cjf.py`
+    monkeypatch.setattr(pncp, "EDICAO_FIXA", None)
+
+
 def contratacao(numero, unidade="090026", nome="SECRETARIA DO CJF", cnpj=GUARDA):
     return {
         "numeroControlePNCP": numero, "anoCompra": 2026, "sequencialCompra": 1,

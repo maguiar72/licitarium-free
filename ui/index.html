@@ -20,7 +20,7 @@
   <div class="card wcard">
     <svg viewBox="0 0 64 64" aria-hidden="true" id="svg-estandarte-wiz"></svg>
     <div class="mark">LICITARI<b>V</b>M</div>
-    <div class="sub">Repositório de contratações públicas</div>
+    <div class="sub" id="wiz-subtitulo">Repositório de contratações públicas</div>
     <!-- edição JF: o acervo pode ser de um município (original) ou de um
          conjunto de órgãos identificados por CNPJ -->
     <div class="campos" id="wiz-modos" role="radiogroup" aria-label="Tipo de acervo"
@@ -720,12 +720,12 @@
         <!-- edição JF: unidades administrativas de cada órgão -->
         <div id="cfg-unidades-caixa" class="oculto" style="margin-top:14px">
           <h4>Unidades de cada órgão</h4>
-          <div class="aviso" style="margin:0 0 8px">Desmarque as unidades que
+          <div class="aviso" id="cfg-unidades-aviso" style="margin:0 0 8px">Desmarque as unidades que
             não quer coletar. Enquanto todas as unidades de um órgão estão
             marcadas, ele é baixado numa volta só; com alguma desmarcada,
             passa a ser baixado unidade por unidade, só as marcadas. O que já
             está no acervo não é apagado.</div>
-          <label class="check-filtro" style="display:flex; gap:6px;
+          <label class="check-filtro" id="cfg-por-unidade-caixa" style="display:flex; gap:6px;
                  margin-bottom:8px; white-space:normal; align-items:flex-start">
             <input type="checkbox" id="cfg-por-unidade">
             <span>Coletar sempre unidade por unidade (mais lento: uma volta

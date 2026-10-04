@@ -108,7 +108,36 @@ PREDEFINICOES = {
         ],
         "unidades_excluidas": ["040101", "925343", "925368"],
     },
+    # Só o Conselho da Justiça Federal. O CJF não tem CNPJ próprio no PNCP:
+    # publica como unidade administrativa do CNPJ guarda-chuva da Justiça
+    # Federal. `unidades` é a lista FECHADA do que entra no acervo — códigos
+    # e nomes como constam em `/v1/orgaos/00508903000188/unidades`
+    # (conferido em 2026-10-02): 090026 é a Secretaria do Conselho, por onde
+    # saem as contratações; 090001 é a unidade "Conselho da Justiça
+    # Federal". Registro de qualquer outra unidade do CNPJ é descartado.
+    "cjf": {
+        "nome": "Conselho da Justiça Federal",
+        "uf": "DF",
+        "descricao": "Somente as unidades do CJF no CNPJ da Justiça Federal",
+        "orgaos": [
+            ("00508903000188", "Conselho da Justiça Federal "
+                               "(unidades do CJF no CNPJ da Justiça Federal)"),
+        ],
+        "unidades_excluidas": [],
+        "unidades": {
+            "00508903000188": [
+                ("090026", "SECRETARIA DO CONSELHO DA JUSTICA FEDERAL-DF",
+                 "Brasília", "DF"),
+                ("090001", "CONSELHO DA JUSTICA FEDERAL-DF", "Brasília", "DF"),
+            ],
+        },
+    },
 }
+
+# Edição CJF (ramo `cjf-apenas`): o programa só oferece esta predefinição no
+# assistente inicial — sem município, sem a JF inteira, sem CNPJs digitados.
+# `None` devolveria a edição JF, com todas as opções.
+EDICAO_FIXA = "cjf"
 
 
 # Nome curto de cada CNPJ da predefinição, para a linha de status da coleta:
@@ -166,6 +195,15 @@ def unidades_excluidas(db):
     É a lista fixa de `config.unidades_excluidas`; a escolha do usuário,
     unidade a unidade, mora na tabela `unidades` (`unidades_desligadas`)."""
     bruto = _config(db, "unidades_excluidas") or ""
+    return {c for c in (_codigo_unidade(x) for x in bruto.split(",")) if c}
+
+
+def unidades_somente(db):
+    """Lista FECHADA de unidades do acervo (códigos normalizados), quando a
+    predefinição define uma — edição CJF. Vazio = sem lista fechada. Com
+    ela, registro de unidade de fora é descartado em todas as fases e a
+    fase 1 só consulta essas unidades."""
+    bruto = _config(db, "unidades_somente") or ""
     return {c for c in (_codigo_unidade(x) for x in bruto.split(",")) if c}
 
 
@@ -272,10 +310,15 @@ def unidades_a_coletar(db, cnpj):
     unidades ativas custa 50 voltas — por isso não é o padrão.
     """
     excluidas = unidades_excluidas(db)
+    somente = unidades_somente(db)
     linhas = [r for r in db.execute(
         "SELECT codigo, codigo_pncp, nome, ativo FROM unidades"
         " WHERE cnpj=? ORDER BY nome, codigo", (cnpj,))
-        if r[0] not in excluidas]
+        if r[0] not in excluidas and (not somente or r[0] in somente)]
+    if somente:
+        # lista fechada: sempre unidade por unidade, e nunca o CNPJ inteiro
+        # — nem com o catálogo vazio (aí não há o que consultar)
+        return [(r[0], r[1] or r[0], r[2] or r[0]) for r in linhas if r[3]]
     if not linhas:
         return None   # catálogo vazio: só dá para consultar o CNPJ inteiro
     if not coleta_por_unidade(db) and all(r[3] for r in linhas):
@@ -600,7 +643,8 @@ def _filtrando_unidade(db, upsert):
     por_orgaos = modo_orgaos(db)
     excluidas = unidades_excluidas(db)
     desligadas = unidades_desligadas(db)
-    if not por_orgaos and not excluidas and not desligadas:
+    somente = unidades_somente(db)
+    if not por_orgaos and not excluidas and not desligadas and not somente:
         return lambda registro: upsert(db, registro.raw)
     vistas = set()
 
@@ -608,6 +652,8 @@ def _filtrando_unidade(db, upsert):
         raw = registro.raw
         codigo = _unidade_de(raw)
         if codigo in excluidas or (_cnpj_de(raw), codigo) in desligadas:
+            return False
+        if somente and codigo not in somente:
             return False
         if por_orgaos:
             _registrar_unidade(db, raw, vistas)
@@ -673,11 +719,16 @@ def sync_contratacoes_orgao(db, cnpj, inicio, fim, motor=None, progresso=None,
     return _baixar_lote(db, motor, registros, gravar, progresso, "Contratações")
 
 
-def configurar_acervo_orgaos(db, nome, uf, orgaos, excluidas=()):
+def configurar_acervo_orgaos(db, nome, uf, orgaos, excluidas=(),
+                             unidades=None):
     """Grava em `config` e `orgaos` um acervo definido por CNPJs.
 
     `orgaos` é uma lista de `(cnpj, razão social)`. Entram como
-    `origem='manual'` e ativos; quem chama já validou os CNPJs."""
+    `origem='manual'` e ativos; quem chama já validou os CNPJs.
+
+    `unidades` (`{cnpj: [(código, nome, município, UF), …]}`) fecha o acervo
+    nessas unidades administrativas: entram no catálogo já ligadas e viram
+    `config.unidades_somente`. Sem ele, o acervo é o CNPJ inteiro."""
     _config(db, "modo_acervo", "orgaos")
     _config(db, "municipio_ibge", IBGE_ORGAOS)
     _config(db, "municipio_nome", nome)
@@ -688,6 +739,17 @@ def configurar_acervo_orgaos(db, nome, uf, orgaos, excluidas=()):
         db.execute(
             "INSERT OR IGNORE INTO orgaos (cnpj, razao_social, ativo, origem)"
             " VALUES (?,?,1,'manual')", (cnpj, razao or cnpj))
+    somente = set()
+    for cnpj, lista in (unidades or {}).items():
+        for codigo_pncp, nome_u, municipio, uf_u in lista:
+            codigo = _codigo_unidade(codigo_pncp)
+            somente.add(codigo)
+            db.execute(
+                "INSERT OR REPLACE INTO unidades (cnpj, codigo, codigo_pncp,"
+                " nome, municipio, uf, ativo, origem)"
+                " VALUES (?,?,?,?,?,?,1,'predefinicao')",
+                (cnpj, codigo, codigo_pncp, nome_u, municipio, uf_u))
+    _config(db, "unidades_somente", ",".join(sorted(somente)))
     db.commit()
 
 
@@ -1113,7 +1175,10 @@ def sincronizar_tudo(db, codigo_ibge, progresso=None, forcado=True,
             # catálogo de unidades: uma vez por CNPJ. Se o portal não
             # responder, a coleta segue — as unidades aparecem conforme os
             # registros chegam, e a consulta é tentada de novo na próxima.
-            if not _config(db, f"unidades_catalogo_{cnpj}"):
+            # (com lista fechada de unidades não há catálogo a buscar: as
+            # unidades do acervo já vieram da predefinição)
+            if (not _config(db, f"unidades_catalogo_{cnpj}")
+                    and not unidades_somente(db)):
                 if progresso:
                     progresso("Unidades…")
                 try:

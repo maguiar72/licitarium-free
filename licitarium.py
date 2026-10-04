@@ -34,6 +34,13 @@ VERSAO = "2.15.0"
 # projeto de origem em que o fork se baseia; `EDICAO_JF` conta as revisões
 # do fork sobre ela. A tag de release é `v<VERSAO>-jf.<EDICAO_JF>`.
 EDICAO_JF = 3
+# Edição CJF (ramo `cjf-apenas`, derivado da edição JF.3): só o Conselho da
+# Justiça Federal. `EDICAO_CJF` conta as revisões deste ramo; a tag de
+# release é `v<VERSAO>-cjf.<EDICAO_CJF>`. O sufixo distingue as releases
+# desta edição das da edição JF, que moram no mesmo repositório — a checagem
+# de atualização só reconhece as do próprio sufixo.
+SUFIXO_EDICAO = "cjf"
+EDICAO_CJF = 1
 REPO_ATUALIZACAO = "maguiar72/licitarium-free"
 
 
@@ -41,14 +48,17 @@ def _versao_tupla(texto):
     """"2.15.0-jf.3" → (2, 15, 0, 3); "2.15.0" → (2, 15, 0, 0). Devolve
     None se o texto não for uma versão reconhecível — quem compara trata
     None como "não sei", nunca como versão menor."""
-    m = re.fullmatch(r"v?(\d+(?:\.\d+)*)(?:-jf\.(\d+))?", (texto or "").strip())
+    m = re.fullmatch(rf"v?(\d+(?:\.\d+)*)(?:-{SUFIXO_EDICAO}\.(\d+))?",
+                     (texto or "").strip())
     if not m:
         return None
     return tuple(int(x) for x in m.group(1).split(".")) + (int(m.group(2) or 0),)
 # dentro do exe onefile os arquivos ficam na pasta temporária do bundle;
 # _MEIPASS é o caminho oficial para chegar até eles
 DIR_APP = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
-DIR_DADOS = Path.home() / "AppData" / "Local" / "Licitarium"
+# pasta própria: a edição CJF convive na mesma máquina com a edição JF (ou
+# com o Licitarium original), cada uma com o seu banco
+DIR_DADOS = Path.home() / "AppData" / "Local" / "LicitariumCJF"
 ARQUIVO_DB = DIR_DADOS / "licitarium.db"
 ICONE_NOTIFICACAO = DIR_APP / "design" / "icone-preview-256.png"
 # mesmo recorte em Api.exportar_json e na exportação por linha de comando
@@ -900,7 +910,7 @@ class Api:
                     "ibge": cfg.get("municipio_ibge"),
                     # "municipio" (original) ou "orgaos" (acervo por CNPJ)
                     "modo": cfg.get("modo_acervo") or "municipio",
-                    "edicao": f"JF.{EDICAO_JF}",
+                    "edicao": f"CJF.{EDICAO_CJF}",
                     "tema": cfg.get("tema", "portal"),
                     # achado do usuário (2026-09-11): Compacta (50% da
                     # janela) em monitor largo deixa uma faixa morta de
@@ -1145,7 +1155,8 @@ class Api:
             pncp._config(db, "municipio_uf", uf)
             # sai do acervo por órgãos, se era esse o modo anterior
             db.execute("DELETE FROM config WHERE chave IN"
-                       " ('modo_acervo', 'unidades_excluidas', 'inicio_coleta')")
+                       " ('modo_acervo', 'unidades_excluidas', 'inicio_coleta',"
+                       "  'unidades_somente')")
             db.commit()
         finally:
             db.close()
@@ -1155,9 +1166,15 @@ class Api:
 
     def predefinicoes(self):
         """Grupos de órgãos prontos para o assistente inicial."""
+        fixa = pncp.EDICAO_FIXA
         return [{"chave": chave, "nome": p["nome"], "descricao": p["descricao"],
-                 "orgaos": [{"cnpj": c, "nome": n} for c, n in p["orgaos"]]}
-                for chave, p in pncp.PREDEFINICOES.items()]
+                 "orgaos": [{"cnpj": c, "nome": n} for c, n in p["orgaos"]],
+                 "unidades": [nome for lista in (p.get("unidades") or {}).values()
+                              for _, nome, _, _ in lista],
+                 # edição de um grupo só: o assistente não oferece mais nada
+                 "fixa": bool(fixa)}
+                for chave, p in pncp.PREDEFINICOES.items()
+                if not fixa or chave == fixa]
 
     @staticmethod
     def _limpar_acervo(db):
@@ -1206,13 +1223,17 @@ class Api:
         validado CNPJ a CNPJ no PNCP e `nome` dá título ao acervo. `desde`
         (ano) limita a primeira coleta. Se já havia acervo, reinicia — como
         `trocar_municipio`."""
-        excluidas = ()
+        excluidas, unidades = (), None
+        # edição de um grupo só: qualquer pedido vira a predefinição fixa
+        if pncp.EDICAO_FIXA:
+            predefinicao = pncp.EDICAO_FIXA
         if predefinicao:
             p = pncp.PREDEFINICOES.get(predefinicao)
             if not p:
                 return {"ok": False, "erro": "predefinição desconhecida"}
             nome, uf = p["nome"], p["uf"]
             orgaos, excluidas = list(p["orgaos"]), p["unidades_excluidas"]
+            unidades = p.get("unidades")
         else:
             nome = (nome or "").strip()
             if not nome:
@@ -1234,7 +1255,8 @@ class Api:
             try:
                 if pncp._config(db, "municipio_ibge"):
                     self._limpar_acervo(db)
-                pncp.configurar_acervo_orgaos(db, nome, uf, orgaos, excluidas)
+                pncp.configurar_acervo_orgaos(db, nome, uf, orgaos, excluidas,
+                                              unidades)
                 if ano:
                     pncp._config(db, "inicio_coleta", f"{ano}-01-01")
                 else:
@@ -1865,7 +1887,10 @@ class Api:
         db = abrir_db()
         try:
             return {"unidades": self._unidades_adm(db, so_com_registro=False),
-                    "por_unidade": pncp.coleta_por_unidade(db)}
+                    "por_unidade": pncp.coleta_por_unidade(db),
+                    # lista fechada (edição CJF): a coleta já é sempre
+                    # unidade por unidade — a opção não se aplica
+                    "fixas": bool(pncp.unidades_somente(db))}
         finally:
             db.close()
 
@@ -2727,7 +2752,7 @@ class Api:
             with urllib.request.urlopen(req, timeout=10) as r:
                 d = json.load(r)
             tag = (d.get("tag_name") or "").lstrip("v")
-            local = _versao_tupla(f"{VERSAO}-jf.{EDICAO_JF}")
+            local = _versao_tupla(f"{VERSAO}-{SUFIXO_EDICAO}.{EDICAO_CJF}")
             remota = _versao_tupla(tag)
             if remota and remota > local:
                 self._atualizacao = d.get("html_url")
@@ -2742,7 +2767,7 @@ class Api:
                 # roda contra elas.
                 self._asset_url = next(
                     (a.get("browser_download_url") for a in d.get("assets", [])
-                     if re.fullmatch(r"Licitarium([ .]Free)?([ .]v[\d.]+)?\.exe",
+                     if re.fullmatch(r"Licitarium[ .]Free[ .]CJF([ .]v[\d.]+)?\.exe",
                                      a.get("name") or "")), None)
                 # instalação automática só faz sentido rodando como exe e
                 # sem Smart App Control barrando o binário novo

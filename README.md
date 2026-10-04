@@ -6,14 +6,19 @@
 
 ---
 
-## Edição JF (este fork)
+## Edição CJF (este ramo)
 
-Este fork acrescenta ao Licitarium o **acervo por órgãos (CNPJ)**, para uso
-fora da esfera municipal — com uma predefinição pronta para a **Justiça
-Federal** (CJF, TRFs da 1ª à 6ª Região e seções judiciárias). No assistente
-inicial, escolha *Órgãos (por CNPJ)* e o grupo *Justiça Federal*, ou informe
-outros CNPJs. O modo *Município* continua igual ao original. Detalhes no
-[CHANGELOG](CHANGELOG.md). Projeto de origem:
+Este ramo (`cjf-apenas`) do fork busca **apenas o Conselho da Justiça
+Federal**. O CJF não tem CNPJ próprio no PNCP — é unidade administrativa do
+CNPJ da Justiça Federal (00.508.903/0001-88) —, então o acervo é fechado nas
+unidades 090026 (Secretaria do Conselho) e 090001 (Conselho da Justiça
+Federal). O assistente inicial não oferece outra opção, e o banco fica em
+`%LOCALAPPDATA%\LicitariumCJF`, separado das outras edições.
+
+A edição da Justiça Federal inteira (CJF, TRFs e seções judiciárias, com
+filtro e coleta por unidade) está no ramo
+[`jf-orgaos-por-cnpj`](https://github.com/maguiar72/licitarium-free/tree/jf-orgaos-por-cnpj).
+Detalhes no [CHANGELOG](CHANGELOG.md). Projeto de origem:
 [devtulio/licitarium-free](https://github.com/devtulio/licitarium-free) (MIT).
 
 ## Descrição
